@@ -1,0 +1,13 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(timeout 6 npx electron .)",
+      "Bash(echo \"EXIT:$?\")",
+      "Bash(npx electron *)",
+      "Bash(pkill -f \"electron .\")",
+      "Bash(env -u ELECTRON_RUN_AS_NODE npx electron .)",
+      "Bash(npx electron-builder *)",
+      "Bash(npm run *)"
+    ]
+  }
+}
