@@ -7,7 +7,10 @@
       "Bash(pkill -f \"electron .\")",
       "Bash(env -u ELECTRON_RUN_AS_NODE npx electron .)",
       "Bash(npx electron-builder *)",
-      "Bash(npm run *)"
+      "Bash(npm run *)",
+      "Bash(git remote *)",
+      "Bash(git branch *)",
+      "Bash(git push *)"
     ]
   }
 }
