@@ -1,0 +1,50 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Door Tracker COM Bridge</title>
+    <link rel="stylesheet" href="styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header>
+        <h1>Door Tracker COM Bridge</h1>
+        <p>Simple proof-of-concept for testing scanner input over a Windows COM port.</p>
+      </header>
+
+      <section class="controls-card">
+        <div class="control-row">
+          <label for="portSelect">COM Port</label>
+          <select id="portSelect"></select>
+        </div>
+
+        <div class="control-row">
+          <label for="baudRate">Baud Rate</label>
+          <input id="baudRate" type="number" min="1200" step="100" value="19200" />
+        </div>
+
+        <div class="button-row">
+          <button id="connectButton">Connect</button>
+          <button id="disconnectButton" class="secondary" disabled>Disconnect</button>
+        </div>
+      </section>
+
+      <section class="status-card">
+        <div class="status-label">Connection Status</div>
+        <div id="statusValue" class="status-badge disconnected">Disconnected</div>
+        <div id="statusMessage" class="status-message">Ready to connect.</div>
+      </section>
+
+      <section class="log-card">
+        <div class="log-header">
+          <h2>Scan Log</h2>
+          <span class="hint">Each scan ends when Enter, CR, LF, or CRLF is received.</span>
+        </div>
+        <ul id="logList" class="log-list"></ul>
+      </section>
+    </div>
+
+    <script src="renderer.js"></script>
+  </body>
+</html>

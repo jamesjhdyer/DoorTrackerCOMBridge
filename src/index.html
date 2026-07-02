@@ -7,7 +7,7 @@
 </head>
 <body>
   <h1>Door Tracker COM Bridge</h1>
-  <p class="subtitle">Proof of concept: NETUM NT-1228BL scanner &rarr; COM port test</p>
+  <p class="subtitle">NETUM NT-1228BL scanner &rarr; COM port &rarr; station API</p>
 
   <section class="controls">
     <div class="field">
@@ -30,9 +30,25 @@
       </select>
     </div>
 
+    <div class="field">
+      <label for="station-select">Station</label>
+      <select id="station-select"></select>
+    </div>
+
     <div class="field buttons">
       <button id="connect-btn">Connect</button>
       <button id="disconnect-btn" disabled>Disconnect</button>
+    </div>
+  </section>
+
+  <section class="controls">
+    <div class="field field-wide">
+      <label for="api-url-input">API URL</label>
+      <input id="api-url-input" type="text" placeholder="https://your-app.example.com/api/com-scans" />
+    </div>
+
+    <div class="field buttons">
+      <button id="save-settings-btn">Save Settings</button>
     </div>
   </section>
 
@@ -53,6 +69,9 @@
           <th>Timestamp</th>
           <th>COM Port</th>
           <th>Scanned Value</th>
+          <th>Station</th>
+          <th>API Status</th>
+          <th>API Message</th>
         </tr>
       </thead>
       <tbody id="log-body"></tbody>
