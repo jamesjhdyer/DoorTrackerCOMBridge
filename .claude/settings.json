@@ -43,7 +43,35 @@
       "Bash(node cdp.mjs log-rows)",
       "Bash(node cdp.mjs screenshot 02-scans-in-log.png)",
       "Bash(node cdp.mjs check-defaults)",
-      "Bash(node cdp.mjs screenshot 03-after-restart.png)"
+      "Bash(node cdp.mjs screenshot 03-after-restart.png)",
+      "Bash(cd /Users/jj/Documents/door-production-tracker && echo \"--- package.json scripts ---\"; grep -A5 '\"scripts\"' package.json; echo \"--- env files ---\"; ls -la .env* 2>/dev/null; echo \"--- vercel config ---\"; find . -maxdepth 1 -iname \"vercel.json\" -o -maxdepth 1 -iname \"*.vercel*\" 2>/dev/null; ls -la .vercel 2>/dev/null; echo \"--- README mentions of url ---\"; grep -ni \"http\" README.md 2>/dev/null | head -20)",
+      "Read(//Users/jj/Documents/door-production-tracker/app/api/events/**)",
+      "Read(//Users/jj/Documents/door-production-tracker/app/api/supabase-scan-test/**)",
+      "Bash(mkdir -p /Users/jj/Documents/door-production-tracker/app/api/com-scans)",
+      "Bash(cd /Users/jj/Documents/door-production-tracker && npx tsc --noEmit 2>&1 | head -60)",
+      "Bash(nohup npm run dev)",
+      "Bash(curl -s -o /dev/null -w \"%{http_code}\" http://localhost:3000)",
+      "Bash(curl -s -X POST http://localhost:3000/api/com-scans -H 'Content-Type: application/json' -d '{\"code\":\"9999-F-99\",\"station_key\":\"frame_cutting\",\"device\":\"COM5-TEST\",\"source\":\"com_listener\",\"baud_rate\":19200}' -w '\\\\nHTTP_STATUS:%{http_code}\\\\n')",
+      "Bash(curl -s \"http://localhost:3000/api/events?limit=3\")",
+      "Bash(python3 -m json.tool)",
+      "Bash(curl -s -X POST http://localhost:3000/api/com-scans -H 'Content-Type: application/json' -d '{\"code\":\"NOT-A-CODE\",\"station_key\":\"frame_cutting\",\"device\":\"COM5-TEST\",\"source\":\"com_listener\",\"baud_rate\":19200}' -w '\\\\nHTTP_STATUS:%{http_code}\\\\n')",
+      "Bash(curl -s -X POST http://localhost:3000/api/com-scans -H 'Content-Type: application/json' -d '{\"code\":\"9999-D-01\",\"station_key\":\"frame_cutting\",\"device\":\"COM5-TEST\",\"source\":\"com_listener\",\"baud_rate\":19200}' -w '\\\\nHTTP_STATUS:%{http_code}\\\\n')",
+      "Bash(curl -s -X POST http://localhost:3000/api/com-scans -H 'Content-Type: application/json' -d '{\"code\":\"9999-F-01\"}' -w '\\\\nHTTP_STATUS:%{http_code}\\\\n')",
+      "Bash(rm -f /private/tmp/claude-501/-Users-jj-Documents-DoorTrackerCOMBridge/82214e88-63a8-4145-a3e6-b01e5a17fc34/scratchpad/ptyfifo)",
+      "Bash(node cdp.mjs connect \"/dev/ttys000|http://localhost:3000/api/com-scans\")",
+      "Bash(echo \"9998-F-05\")",
+      "Bash(node cdp.mjs screenshot 05-live-endpoint.png)",
+      "Bash(curl -s \"http://localhost:3000/api/events?limit=1\")",
+      "Bash(kill 43273)",
+      "Bash(kill 43144)",
+      "Bash(pkill -f mock-api.mjs)",
+      "Bash(rm -f '/Users/jj/Library/Application Support/Door Tracker COM Bridge/settings.json')",
+      "Bash(npx vercel *)",
+      "Bash(cat /Users/jj/Documents/door-production-tracker/lib/supabase.ts 2>/dev/null | head -30)"
+    ],
+    "additionalDirectories": [
+      "/Users/jj/Documents/door-production-tracker/lib",
+      "/Users/jj/Documents/door-production-tracker/app/api"
     ]
   }
 }
