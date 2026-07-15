@@ -5,28 +5,25 @@ const { randomUUID } = require('crypto');
 const { SerialPort } = require('serialport');
 
 let mainWindow = null;
-let activePort = null;
-let readBuffer = '';
 
-// Settings captured at connect time so each scan knows where to POST and
-// how to label itself, independent of whether "Save Settings" was clicked.
-let activeStationKey = '';
-let activeApiUrl = '';
-let activeBaudRate = null;
+// tabId -> { port, portPath, readBuffer, stationKey, apiUrl, baudRate }
+// Each tab owns an independent SerialPort connection so multiple COM ports
+// can be listened to at once from a single running app.
+const connections = new Map();
 
 const API_TIMEOUT_MS = 8000;
 
 const DEFAULT_SETTINGS = {
-  comPort: 'COM5',
-  baudRate: 19200,
-  stationKey: 'frame_cutting',
-  apiUrl: ''
+  apiUrl: '',
+  tabs: [
+    { id: randomUUID(), comPort: 'COM5', baudRate: 19200, stationKey: 'frame_cutting' }
+  ]
 };
 
 function createWindow() {
   mainWindow = new BrowserWindow({
-    width: 900,
-    height: 700,
+    width: 1100,
+    height: 750,
     webPreferences: {
       preload: path.join(__dirname, 'preload.js'),
       contextIsolation: true,
@@ -40,7 +37,7 @@ function createWindow() {
 app.whenReady().then(createWindow);
 
 app.on('window-all-closed', () => {
-  closeActivePort();
+  closeAllConnections();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -52,71 +49,104 @@ function settingsFilePath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
+// Accepts either the current { apiUrl, tabs: [...] } shape or the older
+// single-connection { comPort, baudRate, stationKey, apiUrl } shape so
+// existing settings.json files on disk still load correctly.
+function normalizeSettings(parsed) {
+  if (!parsed || typeof parsed !== 'object') {
+    return structuredClone(DEFAULT_SETTINGS);
+  }
+
+  if (!Array.isArray(parsed.tabs)) {
+    return {
+      apiUrl: parsed.apiUrl || '',
+      tabs: [
+        {
+          id: randomUUID(),
+          comPort: parsed.comPort || DEFAULT_SETTINGS.tabs[0].comPort,
+          baudRate: parsed.baudRate || DEFAULT_SETTINGS.tabs[0].baudRate,
+          stationKey: parsed.stationKey || DEFAULT_SETTINGS.tabs[0].stationKey
+        }
+      ]
+    };
+  }
+
+  return {
+    apiUrl: parsed.apiUrl || '',
+    tabs: parsed.tabs.length > 0 ? parsed.tabs : structuredClone(DEFAULT_SETTINGS.tabs)
+  };
+}
+
 function loadSettingsFromDisk() {
   try {
     const raw = fs.readFileSync(settingsFilePath(), 'utf8');
-    return { ...DEFAULT_SETTINGS, ...JSON.parse(raw) };
+    return normalizeSettings(JSON.parse(raw));
   } catch {
-    return { ...DEFAULT_SETTINGS };
+    return normalizeSettings(null);
   }
 }
 
 function saveSettingsToDisk(settings) {
-  const merged = { ...DEFAULT_SETTINGS, ...settings };
+  const normalized = normalizeSettings(settings);
   fs.mkdirSync(path.dirname(settingsFilePath()), { recursive: true });
-  fs.writeFileSync(settingsFilePath(), JSON.stringify(merged, null, 2), 'utf8');
-  return merged;
+  fs.writeFileSync(settingsFilePath(), JSON.stringify(normalized, null, 2), 'utf8');
+  return normalized;
 }
 
 // ---- Serial port helpers ----
 
-function sendStatus(status, message) {
+function sendStatus(tabId, status, message) {
   if (mainWindow) {
-    mainWindow.webContents.send('port-status', { status, message: message || '' });
+    mainWindow.webContents.send('port-status', { tabId, status, message: message || '' });
   }
 }
 
-function sendScan(portPath, value) {
+function sendScan(tabId, portPath, value) {
   const id = randomUUID();
+  const conn = connections.get(tabId);
 
   if (mainWindow) {
     mainWindow.webContents.send('scan-received', {
+      tabId,
       id,
       timestamp: new Date().toISOString(),
       port: portPath,
       value,
-      station: activeStationKey
+      station: conn ? conn.stationKey : ''
     });
   }
 
-  postScanToApi(id, portPath, value);
+  postScanToApi(tabId, id, portPath, value);
 }
 
-function sendApiResult(id, status, message) {
+function sendApiResult(tabId, id, status, message) {
   if (mainWindow) {
-    mainWindow.webContents.send('scan-api-result', { id, status, message: message || '' });
+    mainWindow.webContents.send('scan-api-result', { tabId, id, status, message: message || '' });
   }
 }
 
-async function postScanToApi(id, portPath, value) {
-  if (!activeApiUrl) {
-    sendApiResult(id, 'error', 'No API URL configured — scan was not sent.');
+async function postScanToApi(tabId, id, portPath, value) {
+  const conn = connections.get(tabId);
+  const apiUrl = conn ? conn.apiUrl : '';
+
+  if (!apiUrl) {
+    sendApiResult(tabId, id, 'error', 'No API URL configured — scan was not sent.');
     return;
   }
 
   const body = {
     code: value,
-    station_key: activeStationKey,
+    station_key: conn.stationKey,
     device: portPath,
     source: 'com_listener',
-    baud_rate: activeBaudRate
+    baud_rate: conn.baudRate
   };
 
   const controller = new AbortController();
   const timeoutId = setTimeout(() => controller.abort(), API_TIMEOUT_MS);
 
   try {
-    const response = await fetch(activeApiUrl, {
+    const response = await fetch(apiUrl, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body),
@@ -132,41 +162,48 @@ async function postScanToApi(id, portPath, value) {
     }
 
     if (response.ok) {
-      sendApiResult(id, 'sent', bodyMessage || 'Sent');
+      sendApiResult(tabId, id, 'sent', bodyMessage || 'Sent');
     } else {
-      sendApiResult(id, 'error', bodyMessage || `HTTP ${response.status} ${response.statusText}`);
+      sendApiResult(tabId, id, 'error', bodyMessage || `HTTP ${response.status} ${response.statusText}`);
     }
   } catch (err) {
     const message = err.name === 'AbortError' ? 'Request timed out' : err.message;
-    sendApiResult(id, 'error', message);
+    sendApiResult(tabId, id, 'error', message);
   } finally {
     clearTimeout(timeoutId);
   }
 }
 
-function closeActivePort() {
-  if (activePort && activePort.isOpen) {
-    activePort.close();
+function closeConnection(tabId) {
+  const conn = connections.get(tabId);
+  if (!conn) return;
+  if (conn.port && conn.port.isOpen) {
+    conn.port.close();
   }
-  activePort = null;
-  readBuffer = '';
-  activeStationKey = '';
-  activeApiUrl = '';
-  activeBaudRate = null;
+  connections.delete(tabId);
+}
+
+function closeAllConnections() {
+  for (const tabId of Array.from(connections.keys())) {
+    closeConnection(tabId);
+  }
 }
 
 // Splits incoming serial data on CR, LF, or CRLF. Any of the three counts
 // as "end of scan" per the NT-1228BL's configurable suffix options.
-function handleIncomingData(portPath, chunk) {
-  readBuffer += chunk.toString('utf8');
+function handleIncomingData(tabId, portPath, chunk) {
+  const conn = connections.get(tabId);
+  if (!conn) return;
+
+  conn.readBuffer += chunk.toString('utf8');
 
   let breakIndex;
-  while ((breakIndex = readBuffer.search(/[\r\n]/)) !== -1) {
-    const scan = readBuffer.slice(0, breakIndex);
-    readBuffer = readBuffer.slice(breakIndex + 1);
+  while ((breakIndex = conn.readBuffer.search(/[\r\n]/)) !== -1) {
+    const scan = conn.readBuffer.slice(0, breakIndex);
+    conn.readBuffer = conn.readBuffer.slice(breakIndex + 1);
 
     if (scan.length > 0) {
-      sendScan(portPath, scan);
+      sendScan(tabId, portPath, scan);
     }
   }
 }
@@ -190,64 +227,77 @@ ipcMain.handle('save-settings', async (event, settings) => {
   return { ok: true, settings: saved };
 });
 
-ipcMain.handle('connect-port', async (event, { path: portPath, baudRate, stationKey, apiUrl }) => {
-  if (activePort && activePort.isOpen) {
-    return { ok: false, error: 'Already connected. Disconnect first.' };
+ipcMain.handle('connect-port', async (event, { tabId, path: portPath, baudRate, stationKey, apiUrl }) => {
+  if (!tabId) {
+    return { ok: false, error: 'Missing tab id' };
   }
 
-  readBuffer = '';
+  const existing = connections.get(tabId);
+  if (existing && existing.port && existing.port.isOpen) {
+    return { ok: false, error: 'This tab is already connected. Disconnect first.' };
+  }
+
+  for (const [otherTabId, conn] of connections) {
+    if (otherTabId !== tabId && conn.portPath === portPath && conn.port && conn.port.isOpen) {
+      return { ok: false, error: `${portPath} is already connected in another tab.` };
+    }
+  }
 
   return new Promise((resolve) => {
     const port = new SerialPort({ path: portPath, baudRate, autoOpen: false });
 
     port.open((err) => {
       if (err) {
-        sendStatus('error', `Failed to open ${portPath}: ${err.message}`);
+        sendStatus(tabId, 'error', `Failed to open ${portPath}: ${err.message}`);
         resolve({ ok: false, error: err.message });
         return;
       }
 
-      activePort = port;
-      activeStationKey = stationKey || '';
-      activeApiUrl = (apiUrl || '').trim();
-      activeBaudRate = baudRate;
-      sendStatus('connected', `Connected to ${portPath} at ${baudRate} baud`);
+      connections.set(tabId, {
+        port,
+        portPath,
+        readBuffer: '',
+        stationKey: stationKey || '',
+        apiUrl: (apiUrl || '').trim(),
+        baudRate
+      });
+
+      sendStatus(tabId, 'connected', `Connected to ${portPath} at ${baudRate} baud`);
       resolve({ ok: true });
     });
 
-    port.on('data', (chunk) => handleIncomingData(portPath, chunk));
+    port.on('data', (chunk) => handleIncomingData(tabId, portPath, chunk));
 
     port.on('error', (err) => {
-      sendStatus('error', `Port error: ${err.message}`);
+      sendStatus(tabId, 'error', `Port error: ${err.message}`);
     });
 
     port.on('close', () => {
-      if (activePort === port) {
-        activePort = null;
-        sendStatus('disconnected', `Port ${portPath} closed`);
+      const conn = connections.get(tabId);
+      if (conn && conn.port === port) {
+        connections.delete(tabId);
+        sendStatus(tabId, 'disconnected', `Port ${portPath} closed`);
       }
     });
   });
 });
 
-ipcMain.handle('disconnect-port', async () => {
-  if (!activePort || !activePort.isOpen) {
-    sendStatus('disconnected', 'No active connection');
+ipcMain.handle('disconnect-port', async (event, { tabId } = {}) => {
+  const conn = connections.get(tabId);
+  if (!conn || !conn.port || !conn.port.isOpen) {
+    connections.delete(tabId);
+    sendStatus(tabId, 'disconnected', 'No active connection');
     return { ok: true };
   }
 
   return new Promise((resolve) => {
-    activePort.close((err) => {
+    conn.port.close((err) => {
       if (err) {
         resolve({ ok: false, error: err.message });
         return;
       }
-      activePort = null;
-      readBuffer = '';
-      activeStationKey = '';
-      activeApiUrl = '';
-      activeBaudRate = null;
-      sendStatus('disconnected', 'Disconnected');
+      connections.delete(tabId);
+      sendStatus(tabId, 'disconnected', 'Disconnected');
       resolve({ ok: true });
     });
   });

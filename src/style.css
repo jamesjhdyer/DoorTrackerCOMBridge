@@ -45,6 +45,25 @@ h1 {
   min-width: 260px;
 }
 
+.hint {
+  font-weight: 400;
+  color: #888;
+  text-transform: none;
+}
+
+.saved-flash {
+  align-self: center;
+  font-size: 12px;
+  font-weight: 600;
+  color: #16a34a;
+  opacity: 0;
+  transition: opacity 0.2s ease;
+}
+
+.saved-flash.visible {
+  opacity: 1;
+}
+
 label {
   font-size: 12px;
   font-weight: 600;
@@ -167,11 +186,105 @@ button:disabled {
   color: #16a34a;
 }
 
+.tab-bar {
+  display: flex;
+  align-items: flex-end;
+  gap: 4px;
+  flex-wrap: wrap;
+  margin-bottom: 16px;
+}
+
+.tab-btn {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  background: #e5e7eb;
+  color: #333;
+  border: 1px solid #ddd;
+  border-bottom: none;
+  border-radius: 6px 6px 0 0;
+  padding: 8px 10px 8px 14px;
+  font-size: 13px;
+  position: relative;
+}
+
+.tab-btn:hover:not(:disabled) {
+  background: #d1d5db;
+}
+
+.tab-btn.active {
+  background: #fff;
+  color: #1a1a1a;
+  font-weight: 600;
+}
+
+.tab-btn.dashboard-tab {
+  border-radius: 6px 6px 0 0;
+}
+
+.tab-btn.tab-connected .tab-btn-label::before {
+  content: '';
+  display: inline-block;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #16a34a;
+  margin-right: 6px;
+}
+
+.tab-btn-close {
+  color: #888;
+  font-size: 14px;
+  line-height: 1;
+  padding: 2px 4px;
+  border-radius: 3px;
+  cursor: pointer;
+}
+
+.tab-btn-close:hover {
+  background: #b91c1c;
+  color: #fff;
+}
+
+.add-tab-btn {
+  background: transparent;
+  color: #2563eb;
+  border: 1px dashed #2563eb;
+  border-radius: 6px 6px 0 0;
+  align-self: flex-end;
+  padding: 8px 14px;
+  font-weight: 700;
+}
+
+.add-tab-btn:hover {
+  background: #eff6ff;
+}
+
+.tab-panel {
+  display: none;
+}
+
+.tab-panel.active {
+  display: block;
+}
+
+.connections-status-message {
+  color: #666;
+  font-size: 12px;
+}
+
+.empty-state {
+  color: #888;
+  text-align: center;
+  padding: 20px 10px;
+}
+
 .log-section {
   background: #fff;
   border: 1px solid #ddd;
   border-radius: 6px;
   padding: 16px;
+  margin-bottom: 16px;
 }
 
 .log-header {

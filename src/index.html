@@ -10,73 +10,119 @@
   <p class="subtitle">NETUM NT-1228BL scanner &rarr; COM port &rarr; station API</p>
 
   <section class="controls">
-    <div class="field">
-      <label for="port-select">COM Port</label>
-      <select id="port-select"></select>
-      <button id="refresh-btn" title="Refresh port list">Refresh</button>
-    </div>
-
-    <div class="field">
-      <label for="baud-select">Baud Rate</label>
-      <select id="baud-select">
-        <option value="1200">1200</option>
-        <option value="2400">2400</option>
-        <option value="4800">4800</option>
-        <option value="9600">9600</option>
-        <option value="19200" selected>19200</option>
-        <option value="38400">38400</option>
-        <option value="57600">57600</option>
-        <option value="115200">115200</option>
-      </select>
-    </div>
-
-    <div class="field">
-      <label for="station-select">Station</label>
-      <select id="station-select"></select>
-    </div>
-
-    <div class="field buttons">
-      <button id="connect-btn">Connect</button>
-      <button id="disconnect-btn" disabled>Disconnect</button>
-    </div>
-  </section>
-
-  <section class="controls">
     <div class="field field-wide">
-      <label for="api-url-input">API URL</label>
+      <label for="api-url-input">Server API URL <span class="hint">(shared by all tabs)</span></label>
       <input id="api-url-input" type="text" placeholder="https://your-app.example.com/api/com-scans" />
     </div>
+    <span id="api-url-saved" class="saved-flash"></span>
+  </section>
 
-    <div class="field buttons">
-      <button id="save-settings-btn">Save Settings</button>
+  <div class="tab-bar" id="tab-bar">
+    <!-- Dashboard tab button + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
+    <button id="add-tab-btn" class="add-tab-btn" title="Add a new COM port connection">+</button>
+  </div>
+
+  <section id="panel-dashboard" class="tab-panel">
+    <div class="log-section">
+      <h2>Connections</h2>
+      <table id="connections-table">
+        <thead>
+          <tr>
+            <th>Tab</th>
+            <th>COM Port</th>
+            <th>Baud</th>
+            <th>Station</th>
+            <th>Status</th>
+          </tr>
+        </thead>
+        <tbody id="connections-body"></tbody>
+      </table>
+    </div>
+
+    <div class="log-section">
+      <div class="log-header">
+        <h2>Recently Scanned (All Tabs)</h2>
+        <button id="clear-recent-btn">Clear</button>
+      </div>
+      <table id="recent-scans-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Tab / COM Port</th>
+            <th>Scanned Value</th>
+            <th>Station</th>
+            <th>API Status</th>
+            <th>API Message</th>
+          </tr>
+        </thead>
+        <tbody id="recent-scans-body"></tbody>
+      </table>
     </div>
   </section>
 
-  <section class="status-bar">
-    <span>Status:</span>
-    <span id="status-badge" class="badge disconnected">Disconnected</span>
-    <span id="status-message"></span>
-  </section>
+  <div id="tab-panels"></div>
 
-  <section class="log-section">
-    <div class="log-header">
-      <h2>Scan Log</h2>
-      <button id="clear-log-btn">Clear Log</button>
-    </div>
-    <table id="log-table">
-      <thead>
-        <tr>
-          <th>Timestamp</th>
-          <th>COM Port</th>
-          <th>Scanned Value</th>
-          <th>Station</th>
-          <th>API Status</th>
-          <th>API Message</th>
-        </tr>
-      </thead>
-      <tbody id="log-body"></tbody>
-    </table>
-  </section>
+  <template id="tab-panel-template">
+    <section class="tab-panel">
+      <section class="controls">
+        <div class="field">
+          <label>COM Port</label>
+          <select class="port-select"></select>
+          <button class="refresh-btn" title="Refresh port list">Refresh</button>
+        </div>
+
+        <div class="field">
+          <label>Baud Rate</label>
+          <select class="baud-select">
+            <option value="1200">1200</option>
+            <option value="2400">2400</option>
+            <option value="4800">4800</option>
+            <option value="9600">9600</option>
+            <option value="19200" selected>19200</option>
+            <option value="38400">38400</option>
+            <option value="57600">57600</option>
+            <option value="115200">115200</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <label>Station</label>
+          <select class="station-select"></select>
+        </div>
+
+        <div class="field buttons">
+          <button class="connect-btn">Connect</button>
+          <button class="disconnect-btn" disabled>Disconnect</button>
+        </div>
+      </section>
+
+      <section class="status-bar">
+        <span>Status:</span>
+        <span class="badge disconnected status-badge">Disconnected</span>
+        <span class="status-message"></span>
+      </section>
+
+      <section class="log-section">
+        <div class="log-header">
+          <h2>Scan Log</h2>
+          <button class="clear-log-btn">Clear Log</button>
+        </div>
+        <table>
+          <thead>
+            <tr>
+              <th>Timestamp</th>
+              <th>COM Port</th>
+              <th>Scanned Value</th>
+              <th>Station</th>
+              <th>API Status</th>
+              <th>API Message</th>
+            </tr>
+          </thead>
+          <tbody class="log-body"></tbody>
+        </table>
+      </section>
+    </section>
+  </template>
 
   <script src="renderer.js"></script>
 </body>
