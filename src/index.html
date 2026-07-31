@@ -53,6 +53,9 @@
     <span id="printer-test-result" class="status-message"></span>
   </section>
 
+  <!-- Shared autocomplete suggestions for the Manual Scan station field below (see .manual-scan-station-input) -->
+  <datalist id="manual-scan-station-list"></datalist>
+
   <div class="tab-bar" id="tab-bar">
     <!-- Dashboard tab button + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
     <button id="add-tab-btn" class="add-tab-btn" title="Add a new COM port connection">+</button>
@@ -158,9 +161,10 @@
 
       <section class="controls manual-scan-section">
         <div class="field field-wide">
-          <label>Manual Scan <span class="hint">(testing only — simulates a scanner input for this tab's station)</span></label>
+          <label>Manual Scan <span class="hint">(testing only — works without a connected COM port; choose or type any station)</span></label>
           <div class="manual-scan-row">
-            <input class="manual-scan-input" type="text" placeholder="e.g. 5432-D" />
+            <input class="manual-scan-station-input" type="text" list="manual-scan-station-list" placeholder="Station, e.g. Pre-Hung" />
+            <input class="manual-scan-input" type="text" placeholder="Scan code, e.g. 5432-D" />
             <button class="manual-scan-btn">Submit</button>
           </div>
         </div>

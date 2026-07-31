@@ -223,6 +223,10 @@ button:disabled {
   flex: 1;
 }
 
+.manual-scan-row .manual-scan-station-input {
+  flex: 0 0 180px;
+}
+
 .manual-scan-btn {
   background: #b45309;
   white-space: nowrap;

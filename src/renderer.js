@@ -32,6 +32,22 @@ const STATION_GROUPS = [
 const STATIONS = STATION_GROUPS.flatMap((g) => g.stations);
 const STATION_LABELS = new Map(STATIONS.map((s) => [s.key, s.label]));
 
+// Resolves whatever text an operator typed/picked into the Manual Scan
+// station field to a station_key the API understands: an exact key match
+// wins, then a case-insensitive label match (so typing "pre-hung" or
+// picking "Pre-Hung" from the datalist both resolve to 'joint_prehung'),
+// and otherwise the raw text is passed through as-is — manual testing is
+// allowed to exercise station keys this bridge doesn't know about.
+function resolveManualStationKey(rawText) {
+  const text = (rawText || '').trim();
+  if (!text) return '';
+  const byKey = STATIONS.find((s) => s.key === text);
+  if (byKey) return byKey.key;
+  const lower = text.toLowerCase();
+  const byLabel = STATIONS.find((s) => s.label.toLowerCase() === lower);
+  return byLabel ? byLabel.key : text;
+}
+
 const RECENT_SCANS_LIMIT = 50;
 const SAVE_DEBOUNCE_MS = 400;
 
@@ -63,6 +79,7 @@ const printTestPatternBtn = document.getElementById('print-test-pattern-btn');
 const reprintJobIdInput = document.getElementById('reprint-job-id-input');
 const reprintTestBtn = document.getElementById('reprint-test-btn');
 const printerTestResult = document.getElementById('printer-test-result');
+const manualScanStationList = document.getElementById('manual-scan-station-list');
 
 // ---- State ----
 
@@ -85,6 +102,19 @@ function populateStationSelect(selectEl) {
       optgroup.appendChild(option);
     }
     selectEl.appendChild(optgroup);
+  }
+}
+
+// One shared datalist backs every tab's Manual Scan station field (a
+// per-tab-panel-template element would mean duplicate ids once cloned
+// across tabs), listing known station labels as suggestions while still
+// allowing free text — see resolveManualStationKey.
+function populateManualScanStationList() {
+  manualScanStationList.innerHTML = '';
+  for (const station of STATIONS) {
+    const option = document.createElement('option');
+    option.value = station.label;
+    manualScanStationList.appendChild(option);
   }
 }
 
@@ -384,6 +414,7 @@ function buildTabPanel(tab) {
   const statusMessage = panel.querySelector('.status-message');
   const logBody = panel.querySelector('.log-body');
   const clearLogBtn = panel.querySelector('.clear-log-btn');
+  const manualScanStationInput = panel.querySelector('.manual-scan-station-input');
   const manualScanInput = panel.querySelector('.manual-scan-input');
   const manualScanBtn = panel.querySelector('.manual-scan-btn');
   const manualScanResult = panel.querySelector('.manual-scan-result');
@@ -419,8 +450,20 @@ function buildTabPanel(tab) {
     logBody.innerHTML = '';
   });
 
+  // Defaults to this tab's current connection station as a convenience
+  // starting point, but is otherwise fully independent from here on — it
+  // does not read from or write back to stationSelect, so testing a
+  // different station never touches the tab's real connection settings.
+  manualScanStationInput.value = STATION_LABELS.get(tab.stationKey) || tab.stationKey || '';
+
   manualScanBtn.addEventListener('click', () => submitManualScan(tab));
   manualScanInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitManualScan(tab);
+    }
+  });
+  manualScanStationInput.addEventListener('keydown', (event) => {
     if (event.key === 'Enter') {
       event.preventDefault();
       submitManualScan(tab);
@@ -438,6 +481,7 @@ function buildTabPanel(tab) {
   tab.els.statusMessage = statusMessage;
   tab.els.logBody = logBody;
   tab.els.clearLogBtn = clearLogBtn;
+  tab.els.manualScanStationInput = manualScanStationInput;
   tab.els.manualScanInput = manualScanInput;
   tab.els.manualScanBtn = manualScanBtn;
   tab.els.manualScanResult = manualScanResult;
@@ -537,14 +581,17 @@ async function disconnectTab(id) {
 }
 
 // ---- Manual scan (testing) ----
-// Simulates a scanner input for this tab's currently selected station,
-// without needing a physical scanner or even an open COM connection. This
-// only handles local input validation (trim/empty) and a busy-guard against
-// double submission — the actual submission goes through the exact same
-// postScanToApi()/printProcessor path a real COM-port scan uses (see
-// main.js's manual-scan IPC handler), so a manual "5432-D" at a tab
-// configured for Pre-Hung behaves identically to physically scanning it:
-// same request to /api/com-scans, same scan-received/scan-api-result
+// Simulates a scanner input for a station picked/typed right here in the
+// Manual Scan section — deliberately independent of the tab's own
+// connect-time Station select (tab.els.stationSelect), so testing e.g.
+// Pre-Hung doesn't require this tab to be connected, or even configured,
+// for that station. Needs no physical scanner and no open COM connection
+// at all. This only handles local input validation (trim/empty) and a
+// busy-guard against double submission — the actual submission goes
+// through the exact same postScanToApi()/printProcessor path a real
+// COM-port scan uses (see main.js's manual-scan IPC handler), so a manual
+// "5432-D" against "Pre-Hung" behaves identically to physically scanning
+// it: same request to /api/com-scans, same scan-received/scan-api-result
 // events feeding this tab's Scan Log and the dashboard's Recently Scanned
 // table, and any returned printJob is enqueued into the same
 // PrintJobProcessor a real scan would use.
@@ -558,6 +605,13 @@ async function submitManualScan(tab) {
     return;
   }
 
+  const stationText = tab.els.manualScanStationInput.value.trim();
+  if (!stationText) {
+    tab.els.manualScanResult.textContent = 'Enter or choose a station to submit.';
+    return;
+  }
+  const stationKey = resolveManualStationKey(stationText);
+
   tab.manualScanBusy = true;
   tab.els.manualScanBtn.disabled = true;
   tab.els.manualScanResult.textContent = 'Sending…';
@@ -566,7 +620,7 @@ async function submitManualScan(tab) {
     const result = await window.comBridge.manualScan({
       tabId: tab.id,
       code,
-      stationKey: tab.els.stationSelect.value,
+      stationKey,
       apiUrl
     });
 
@@ -768,6 +822,8 @@ window.comBridge.onPrintJobEvent((event) => {
 // ---- Init ----
 
 async function init() {
+  populateManualScanStationList();
+
   const settings = await window.comBridge.loadSettings();
   apiUrl = settings.apiUrl || '';
   apiUrlInput.value = apiUrl;

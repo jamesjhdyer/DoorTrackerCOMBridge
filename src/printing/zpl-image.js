@@ -18,6 +18,25 @@ function mmToDots(mm, dpi) {
   return Math.max(1, Math.round((mm * dpi) / MM_PER_INCH));
 }
 
+// Same conversion as mmToDots but signed (no floor of 1), for offsets that
+// can legitimately be negative or zero — a size can't be, but a shift can.
+function mmToDotsSigned(mm, dpi) {
+  return Math.round((mm * dpi) / MM_PER_INCH);
+}
+
+// Physical home-offset correction for the GK420D, confirmed from a printed
+// 89x36mm test pattern: the printed content landed consistently ~1mm to
+// the right of where the ZPL canvas places it (left margin measured ~1mm
+// wider than designed, right margin ~1mm narrower), while the vertical
+// start position was already correct ("aligned correctly at the top").
+// That's the label/printhead centering ^LS (Label Shift) exists to
+// compensate for, and it's a characteristic of this printer+media
+// combination, not of any one label design — so it's applied wherever ZPL
+// gets assembled (both the diagnostic test pattern and real delivery
+// labels), rather than only in the test pattern. Re-tune this constant
+// (from a fresh physical test print) if the printer or media stock changes.
+const LABEL_SHIFT_X_MM = -1;
+
 // Downsamples an RGBA source image to a 1-bit-per-pixel monochrome bitmap
 // at the target pixel dimensions, using block-averaging (each target pixel
 // = the average luminance of the corresponding block of source pixels,
@@ -83,8 +102,9 @@ function bitmapToGraphicField(bitmap, bytesPerRow) {
   return `^GFA,${totalBytes},${totalBytes},${bytesPerRow},${hex}`;
 }
 
-function assembleLabelZpl({ widthDots, heightDots, graphicField }) {
-  return ['^XA', '^MTD', `^PW${widthDots}`, `^LL${heightDots}`, '^FO0,0', graphicField, '^XZ', ''].join('\n');
+function assembleLabelZpl({ widthDots, heightDots, graphicField, dpi }) {
+  const shiftDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
+  return ['^XA', '^MTD', `^PW${widthDots}`, `^LL${heightDots}`, `^LS${shiftDots}`, '^FO0,0', graphicField, '^XZ', ''].join('\n');
 }
 
 // Converts one label's PNG bytes into a complete, ready-to-submit ZPL
@@ -115,7 +135,7 @@ function pngBufferToZplLabel(pngBuffer, { widthMm, heightMm, dpi }) {
   const { bitmap, bytesPerRow } = downsampleToMonochromeBitmap(png, widthDots, heightDots);
   const graphicField = bitmapToGraphicField(bitmap, bytesPerRow);
 
-  return assembleLabelZpl({ widthDots, heightDots, graphicField });
+  return assembleLabelZpl({ widthDots, heightDots, graphicField, dpi });
 }
 
 // A simple, bridge-generated calibration pattern — a border inset from
@@ -123,6 +143,19 @@ function pngBufferToZplLabel(pngBuffer, { widthMm, heightMm, dpi }) {
 // and feed on real stock. Deliberately NOT an attempt at the real delivery
 // label's look (no order number, no "-DELIV" text, no Data Matrix): this
 // is a diagnostic pattern, not a recreation of the website's label design.
+//
+// Alignment note: a physical 89x36mm print of this pattern showed the top
+// landing correctly but ~3mm blank at the bottom (vs. ~5mm/~1mm on
+// left/right before the LABEL_SHIFT_X_MM fix above). Unlike the horizontal
+// case, this isn't a simple shift — the top being already correct means
+// shifting vertically would only trade top accuracy for bottom accuracy.
+// It smells like this GK420D's own label-length/gap calibration for this
+// media running slightly long, which isn't something safe to guess-correct
+// by inflating ^LL here: get it wrong and a taller-than-physical label
+// canvas can drift the *next* label's registration. If it's still short
+// after a reprint, recalibrate the printer for this stock (or empirically
+// raise the height in the Test label size (mm) field above to find the
+// true usable length) rather than padding this function further.
 function buildTestPatternZpl({ widthMm, heightMm, dpi }) {
   if (!(widthMm > 0) || !(heightMm > 0)) {
     throw new Error(`Invalid label dimensions: ${widthMm}mm x ${heightMm}mm.`);
@@ -130,17 +163,25 @@ function buildTestPatternZpl({ widthMm, heightMm, dpi }) {
 
   const widthDots = mmToDots(widthMm, dpi);
   const heightDots = mmToDots(heightMm, dpi);
-  const insetDots = mmToDots(2, dpi);
+  // Cosmetic margin between the border and the label's physical edge —
+  // shrunk from a prior 2mm to 1mm so the pattern uses as much of the
+  // physical label as the GK420D allows while still leaving the border
+  // visibly inset (a literal 0-inset border risks printing right at/past
+  // the die-cut edge, where thermal printers commonly can't render
+  // reliably anyway).
+  const insetDots = mmToDots(1, dpi);
 
   const boxWidth = Math.max(1, widthDots - insetDots * 2);
   const boxHeight = Math.max(1, heightDots - insetDots * 2);
   const thickness = Math.max(1, Math.round(dpi / 100)); // ~0.25mm line weight
+  const shiftDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
 
   const lines = [
     '^XA',
     '^MTD',
     `^PW${widthDots}`,
     `^LL${heightDots}`,
+    `^LS${shiftDots}`,
     // Border rectangle
     `^FO${insetDots},${insetDots}^GB${boxWidth},${boxHeight},${thickness}^FS`,
     // Crosshair through the center
