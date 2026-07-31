@@ -30,11 +30,7 @@ const printAttemptStore = createPrintAttemptStore(path.join(app.getPath('userDat
 // job from one tab can never reach the physical printer at the same time
 // as a job from another. See print-job-processor.js.
 const printProcessor = new PrintJobProcessor({
-  onEvent: (event) => {
-    if (mainWindow && !mainWindow.isDestroyed()) {
-      mainWindow.webContents.send('print-job-event', event);
-    }
-  },
+  onEvent: (event) => sendPrintJobEvent(event.jobId, event.status, event.message),
   priorAttemptStore: printAttemptStore
 });
 
@@ -162,6 +158,35 @@ function sendApiResult(tabId, id, status, message) {
   }
 }
 
+function sendPrintJobEvent(jobId, status, message) {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('print-job-event', { jobId, status, message: message || '' });
+  }
+}
+
+// Turns whatever POST /api/com-scans returned in its optional `printJob`
+// field into a one-line, human-readable summary — see the CreateDeliveryPrintJobResult
+// union in door-production-tracker's lib/print-jobs.ts for the authoritative
+// shape this mirrors: { created: true, jobId, ... } or
+// { created: false, reason, message, jobId? } (jobId is only present when
+// reason is "duplicate" — every other reason means nothing was ever
+// persisted, so there is no job_id to reference).
+// `printJob` being entirely absent (the field doesn't exist in the response
+// at all) is the normal case for every station/code that isn't a delivery
+// trigger and returns null here deliberately, so callers don't manufacture
+// a misleading "no print job" message for scans that were never expected
+// to print anything in the first place.
+function summarizePrintJobOutcome(printJob) {
+  if (!printJob) return null;
+  if (printJob.created) {
+    return `Print job ${printJob.jobId} queued.`;
+  }
+  if (printJob.reason === 'duplicate') {
+    return `Print job NOT created — an automatic delivery job for this order already exists (${printJob.jobId}). This order is now permanently deduped; scanning it again will never create a second automatic job. Use the Reprint field in the Printer panel with job id ${printJob.jobId} to test printing again, or scan a different/fresh order.`;
+  }
+  return `Print job NOT created (${printJob.reason}): ${printJob.message}`;
+}
+
 // The one and only path anything in this app uses to submit a scan to the
 // website — a real COM-port scan (sendScan, above) and a manual test scan
 // (the manual-scan IPC handler, below) both call this with the same shape
@@ -202,18 +227,36 @@ async function postScanToApi(tabId, id, { apiUrl, stationKey, baudRate, device, 
       // Response wasn't JSON — fall back to status text below.
     }
 
+    // Surfaced alongside the normal Sent/Error result (in the same message
+    // shown in this tab's Scan Log and the dashboard's Recently Scanned
+    // table) purely as diagnostics — this never changes whether the scan
+    // itself is reported as sent/error, only appends what happened to any
+    // printJob the response carried, which was previously computed below
+    // and then silently discarded when it didn't lead to an enqueue.
+    const printJobSummary = response.ok ? summarizePrintJobOutcome(data && data.printJob) : null;
+
     if (response.ok) {
-      sendApiResult(tabId, id, 'sent', bodyMessage || 'Sent');
+      const message = printJobSummary ? `${bodyMessage || 'Sent'} — ${printJobSummary}` : bodyMessage || 'Sent';
+      sendApiResult(tabId, id, 'sent', message);
     } else {
       sendApiResult(tabId, id, 'error', bodyMessage || `HTTP ${response.status} ${response.statusText}`);
     }
 
-    // Existing scan handling above is completely unchanged by this — a
-    // response with no printJob (every station except Pre-Hung, and most
-    // Pre-Hung scans) falls through here with nothing left to do, exactly
-    // as before this feature existed.
+    // Existing enqueue condition, completely unchanged: a response with no
+    // printJob (every station except Pre-Hung, and most Pre-Hung scans)
+    // falls through here with nothing left to do, exactly as before this
+    // feature existed. `created` really is the correct field to gate on —
+    // see CreateDeliveryPrintJobResult in door-production-tracker's
+    // lib/print-jobs.ts — the reason enqueue can appear to silently "not
+    // print" is upstream of this check (see the same file's route.ts
+    // PRE_HUNG_STATION_KEYS bug, fixed separately).
     if (data && data.printJob && data.printJob.created) {
       printProcessor.enqueue(data.printJob, deriveApiBase(apiUrl));
+    } else if (data && data.printJob && data.printJob.reason === 'duplicate') {
+      // Not enqueued (correctly — see summarizePrintJobOutcome above), but
+      // still worth a row in the Print Jobs table since it references a
+      // real, already-tracked job_id, unlike the other not-created reasons.
+      sendPrintJobEvent(data.printJob.jobId, 'SKIPPED', `Duplicate — ${data.printJob.message}`);
     }
   } catch (err) {
     const message = err.name === 'AbortError' ? 'Request timed out' : err.message;

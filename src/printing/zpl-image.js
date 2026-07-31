@@ -24,18 +24,38 @@ function mmToDotsSigned(mm, dpi) {
   return Math.round((mm * dpi) / MM_PER_INCH);
 }
 
-// Physical home-offset correction for the GK420D, confirmed from a printed
-// 89x36mm test pattern: the printed content landed consistently ~1mm to
-// the right of where the ZPL canvas places it (left margin measured ~1mm
-// wider than designed, right margin ~1mm narrower), while the vertical
-// start position was already correct ("aligned correctly at the top").
-// That's the label/printhead centering ^LS (Label Shift) exists to
-// compensate for, and it's a characteristic of this printer+media
-// combination, not of any one label design — so it's applied wherever ZPL
-// gets assembled (both the diagnostic test pattern and real delivery
-// labels), rather than only in the test pattern. Re-tune this constant
-// (from a fresh physical test print) if the printer or media stock changes.
-const LABEL_SHIFT_X_MM = -1;
+// Physical home-offset correction for the GK420D. Confirmed from a printed
+// 89x36mm test pattern: the printed content lands consistently up and to
+// the right of the physical label — ~3mm unused blank on the left edge,
+// ~3mm unused blank on the bottom edge, with content clipped off at both
+// the top and right edges. That means the printer's own registration point
+// (where it thinks ZPL's (0,0) is, before any correction) sits about 3mm
+// to the right of the label's true left edge and about 3mm before
+// (above) the label's true top edge — a fixed characteristic of this
+// printer+media combination, not of any one label design, so both
+// corrections are applied wherever ZPL gets assembled (the diagnostic test
+// pattern AND real delivery labels), never just one or the other.
+//
+// The fix is a shift of the whole printed canvas towards the bottom-left —
+// exactly the opposite of the measured error — using the two ZPL commands
+// built for this: ^LS (Label Shift) moves everything horizontally and
+// accepts negative values (unlike ^FO, whose x/y can't go negative), which
+// is required here since we need to move content LEFT; ^LT (Label Top)
+// does the vertical equivalent, shifting the whole format up/down within
+// the same label length (range roughly ±120 dots — comfortably covers a
+// few mm at 203dpi) without touching every individual field's y-coordinate.
+// Both apply once, at the format level, rather than needing every ^FO
+// call's x/y hand-adjusted.
+//
+// Negative LABEL_SHIFT_X_MM = shift content left (reduces left blank,
+// pulls the right edge back from being clipped).
+// Positive LABEL_SHIFT_Y_MM = shift content down (stops top clipping,
+// reduces bottom blank).
+// Re-tune these two from a fresh physical test print if the printer/media
+// stock changes or still needs another 1-2mm nudge — each is a single,
+// independent, millimeter-denominated constant.
+const LABEL_SHIFT_X_MM = -3;
+const LABEL_SHIFT_Y_MM = 3;
 
 // Downsamples an RGBA source image to a 1-bit-per-pixel monochrome bitmap
 // at the target pixel dimensions, using block-averaging (each target pixel
@@ -103,8 +123,20 @@ function bitmapToGraphicField(bitmap, bytesPerRow) {
 }
 
 function assembleLabelZpl({ widthDots, heightDots, graphicField, dpi }) {
-  const shiftDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
-  return ['^XA', '^MTD', `^PW${widthDots}`, `^LL${heightDots}`, `^LS${shiftDots}`, '^FO0,0', graphicField, '^XZ', ''].join('\n');
+  const shiftXDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
+  const shiftYDots = mmToDotsSigned(LABEL_SHIFT_Y_MM, dpi);
+  return [
+    '^XA',
+    '^MTD',
+    `^PW${widthDots}`,
+    `^LL${heightDots}`,
+    `^LS${shiftXDots}`,
+    `^LT${shiftYDots}`,
+    '^FO0,0',
+    graphicField,
+    '^XZ',
+    ''
+  ].join('\n');
 }
 
 // Converts one label's PNG bytes into a complete, ready-to-submit ZPL
@@ -144,18 +176,10 @@ function pngBufferToZplLabel(pngBuffer, { widthMm, heightMm, dpi }) {
 // label's look (no order number, no "-DELIV" text, no Data Matrix): this
 // is a diagnostic pattern, not a recreation of the website's label design.
 //
-// Alignment note: a physical 89x36mm print of this pattern showed the top
-// landing correctly but ~3mm blank at the bottom (vs. ~5mm/~1mm on
-// left/right before the LABEL_SHIFT_X_MM fix above). Unlike the horizontal
-// case, this isn't a simple shift — the top being already correct means
-// shifting vertically would only trade top accuracy for bottom accuracy.
-// It smells like this GK420D's own label-length/gap calibration for this
-// media running slightly long, which isn't something safe to guess-correct
-// by inflating ^LL here: get it wrong and a taller-than-physical label
-// canvas can drift the *next* label's registration. If it's still short
-// after a reprint, recalibrate the printer for this stock (or empirically
-// raise the height in the Test label size (mm) field above to find the
-// true usable length) rather than padding this function further.
+// Alignment: uses the same LABEL_SHIFT_X_MM/LABEL_SHIFT_Y_MM origin
+// correction as real delivery labels (see above) — this pattern IS the
+// tool used to measure and tune that correction, so it must reflect it
+// exactly, or it stops representing what a real label will do.
 function buildTestPatternZpl({ widthMm, heightMm, dpi }) {
   if (!(widthMm > 0) || !(heightMm > 0)) {
     throw new Error(`Invalid label dimensions: ${widthMm}mm x ${heightMm}mm.`);
@@ -174,14 +198,16 @@ function buildTestPatternZpl({ widthMm, heightMm, dpi }) {
   const boxWidth = Math.max(1, widthDots - insetDots * 2);
   const boxHeight = Math.max(1, heightDots - insetDots * 2);
   const thickness = Math.max(1, Math.round(dpi / 100)); // ~0.25mm line weight
-  const shiftDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
+  const shiftXDots = mmToDotsSigned(LABEL_SHIFT_X_MM, dpi);
+  const shiftYDots = mmToDotsSigned(LABEL_SHIFT_Y_MM, dpi);
 
   const lines = [
     '^XA',
     '^MTD',
     `^PW${widthDots}`,
     `^LL${heightDots}`,
-    `^LS${shiftDots}`,
+    `^LS${shiftXDots}`,
+    `^LT${shiftYDots}`,
     // Border rectangle
     `^FO${insetDots},${insetDots}^GB${boxWidth},${boxHeight},${thickness}^FS`,
     // Crosshair through the center

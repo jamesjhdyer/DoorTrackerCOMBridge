@@ -32,20 +32,46 @@ const STATION_GROUPS = [
 const STATIONS = STATION_GROUPS.flatMap((g) => g.stations);
 const STATION_LABELS = new Map(STATIONS.map((s) => [s.key, s.label]));
 
+// This bridge's own STATION_GROUPS `.key` values (e.g. 'joint_prehung') are
+// internal bookkeeping used for the real COM-connection Station dropdown
+// and settings persistence — they are NOT necessarily the literal
+// `station_key` value the website's STATIONS sheet/API actually expects.
+// Confirmed live (GET /api/stations against the running system) that for
+// the Pre-Hung joint station specifically, the sheet's real columns are
+// station_key="Pre-Hung" / station_name="joint_prehung" — the reverse of
+// what this bridge's internal key/label pairing would suggest. Manual Scan
+// talks to the website directly, so it must send the real station_key, not
+// this bridge's internal key — this override table is exactly (and only)
+// that translation. It intentionally does NOT touch the real
+// COM-connection path (stationSelect/conn.stationKey), which still sends
+// 'joint_prehung' today; only Pre-Hung is listed here because only Pre-Hung
+// has been live-confirmed to differ — no other station is assumed to.
+const MANUAL_SCAN_API_STATION_KEY_OVERRIDES = new Map([
+  ['joint_prehung', 'Pre-Hung']
+]);
+
 // Resolves whatever text an operator typed/picked into the Manual Scan
-// station field to a station_key the API understands: an exact key match
-// wins, then a case-insensitive label match (so typing "pre-hung" or
-// picking "Pre-Hung" from the datalist both resolve to 'joint_prehung'),
-// and otherwise the raw text is passed through as-is — manual testing is
-// allowed to exercise station keys this bridge doesn't know about.
+// station field to the API's real station_key: an exact match against this
+// bridge's internal STATIONS `.key` wins, then a case-insensitive match
+// against `.label` (so typing "pre-hung" or picking "Pre-Hung" from the
+// datalist both resolve the same way), and otherwise the raw text is
+// passed through as-is — manual testing is allowed to exercise station
+// keys this bridge doesn't know about. Whatever internal key is found is
+// then run through MANUAL_SCAN_API_STATION_KEY_OVERRIDES so the value that
+// actually gets sent is the website's real station_key (e.g. "Pre-Hung"),
+// not this bridge's internal identifier.
 function resolveManualStationKey(rawText) {
   const text = (rawText || '').trim();
   if (!text) return '';
+
   const byKey = STATIONS.find((s) => s.key === text);
-  if (byKey) return byKey.key;
+  if (byKey) return MANUAL_SCAN_API_STATION_KEY_OVERRIDES.get(byKey.key) || byKey.key;
+
   const lower = text.toLowerCase();
   const byLabel = STATIONS.find((s) => s.label.toLowerCase() === lower);
-  return byLabel ? byLabel.key : text;
+  if (byLabel) return MANUAL_SCAN_API_STATION_KEY_OVERRIDES.get(byLabel.key) || byLabel.key;
+
+  return text;
 }
 
 const RECENT_SCANS_LIMIT = 50;
