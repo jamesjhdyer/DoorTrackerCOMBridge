@@ -47,6 +47,22 @@ const dashboardPanel = document.getElementById('panel-dashboard');
 const connectionsBody = document.getElementById('connections-body');
 const recentScansBody = document.getElementById('recent-scans-body');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
+const printJobsBody = document.getElementById('print-jobs-body');
+const clearPrintJobsBtn = document.getElementById('clear-print-jobs-btn');
+
+const printerSelect = document.getElementById('printer-select');
+const printerRefreshBtn = document.getElementById('printer-refresh-btn');
+const printerSaveBtn = document.getElementById('printer-save-btn');
+const printerCheckBtn = document.getElementById('printer-check-btn');
+const printerSavedFlash = document.getElementById('printer-saved');
+const printerStatusBadge = document.getElementById('printer-status-badge');
+const printerStatusMessage = document.getElementById('printer-status-message');
+const testWidthMmInput = document.getElementById('test-width-mm');
+const testHeightMmInput = document.getElementById('test-height-mm');
+const printTestPatternBtn = document.getElementById('print-test-pattern-btn');
+const reprintJobIdInput = document.getElementById('reprint-job-id-input');
+const reprintTestBtn = document.getElementById('reprint-test-btn');
+const printerTestResult = document.getElementById('printer-test-result');
 
 // ---- State ----
 
@@ -172,6 +188,42 @@ function trimTableRows(tbody, max) {
   while (tbody.rows.length > max) {
     tbody.deleteRow(tbody.rows.length - 1);
   }
+}
+
+// One row per job_id, updated in place as it moves through
+// QUEUED -> CLAIMED -> PRINTING -> PRINTED/FAILED (or SKIPPED, if this
+// bridge instance had already seen the job_id) — mirrors how scan rows
+// already update in place via updateLogRowApiResult, just keyed by job_id
+// instead of scan id.
+function upsertPrintJobRow({ jobId, status, message }) {
+  let row = printJobsBody.querySelector(`tr[data-job-id="${CSS.escape(jobId)}"]`);
+
+  if (!row) {
+    row = document.createElement('tr');
+    row.dataset.jobId = jobId;
+
+    const timeCell = document.createElement('td');
+    const jobCell = document.createElement('td');
+    jobCell.className = 'job-id-cell';
+    jobCell.textContent = jobId;
+    const statusCell = document.createElement('td');
+    statusCell.className = 'print-status-cell';
+    const badge = document.createElement('span');
+    badge.className = 'api-status';
+    statusCell.appendChild(badge);
+    const messageCell = document.createElement('td');
+    messageCell.className = 'api-message-cell';
+
+    row.append(timeCell, jobCell, statusCell, messageCell);
+    printJobsBody.insertBefore(row, printJobsBody.firstChild);
+    trimTableRows(printJobsBody, RECENT_SCANS_LIMIT);
+  }
+
+  row.cells[0].textContent = new Date().toLocaleTimeString();
+  const badge = row.querySelector('.api-status');
+  badge.className = `api-status ${status.toLowerCase()}`;
+  badge.textContent = status;
+  row.cells[3].textContent = message || '';
 }
 
 function flashSaved(el) {
@@ -332,6 +384,9 @@ function buildTabPanel(tab) {
   const statusMessage = panel.querySelector('.status-message');
   const logBody = panel.querySelector('.log-body');
   const clearLogBtn = panel.querySelector('.clear-log-btn');
+  const manualScanInput = panel.querySelector('.manual-scan-input');
+  const manualScanBtn = panel.querySelector('.manual-scan-btn');
+  const manualScanResult = panel.querySelector('.manual-scan-result');
 
   populateStationSelect(stationSelect);
   stationSelect.value = tab.stationKey;
@@ -364,6 +419,14 @@ function buildTabPanel(tab) {
     logBody.innerHTML = '';
   });
 
+  manualScanBtn.addEventListener('click', () => submitManualScan(tab));
+  manualScanInput.addEventListener('keydown', (event) => {
+    if (event.key === 'Enter') {
+      event.preventDefault();
+      submitManualScan(tab);
+    }
+  });
+
   tab.els.panel = panel;
   tab.els.portSelect = portSelect;
   tab.els.refreshBtn = refreshBtn;
@@ -375,6 +438,9 @@ function buildTabPanel(tab) {
   tab.els.statusMessage = statusMessage;
   tab.els.logBody = logBody;
   tab.els.clearLogBtn = clearLogBtn;
+  tab.els.manualScanInput = manualScanInput;
+  tab.els.manualScanBtn = manualScanBtn;
+  tab.els.manualScanResult = manualScanResult;
 
   tabPanelsContainer.appendChild(panel);
 }
@@ -388,6 +454,7 @@ function createTabState(config) {
     connected: false,
     status: 'disconnected',
     statusMessage: '',
+    manualScanBusy: false,
     els: {}
   };
 
@@ -469,6 +536,164 @@ async function disconnectTab(id) {
   setConnectedUiState(tab, false);
 }
 
+// ---- Manual scan (testing) ----
+// Simulates a scanner input for this tab's currently selected station,
+// without needing a physical scanner or even an open COM connection. This
+// only handles local input validation (trim/empty) and a busy-guard against
+// double submission — the actual submission goes through the exact same
+// postScanToApi()/printProcessor path a real COM-port scan uses (see
+// main.js's manual-scan IPC handler), so a manual "5432-D" at a tab
+// configured for Pre-Hung behaves identically to physically scanning it:
+// same request to /api/com-scans, same scan-received/scan-api-result
+// events feeding this tab's Scan Log and the dashboard's Recently Scanned
+// table, and any returned printJob is enqueued into the same
+// PrintJobProcessor a real scan would use.
+async function submitManualScan(tab) {
+  if (tab.manualScanBusy) return;
+
+  const input = tab.els.manualScanInput;
+  const code = input.value.trim();
+  if (!code) {
+    tab.els.manualScanResult.textContent = 'Enter a code to submit.';
+    return;
+  }
+
+  tab.manualScanBusy = true;
+  tab.els.manualScanBtn.disabled = true;
+  tab.els.manualScanResult.textContent = 'Sending…';
+
+  try {
+    const result = await window.comBridge.manualScan({
+      tabId: tab.id,
+      code,
+      stationKey: tab.els.stationSelect.value,
+      apiUrl
+    });
+
+    if (result.ok) {
+      input.value = '';
+      // The actual send outcome (Sent/Error) appears in the Scan Log row
+      // below via the normal scan-received/scan-api-result events, so no
+      // need to duplicate it here.
+      tab.els.manualScanResult.textContent = '';
+    } else {
+      tab.els.manualScanResult.textContent = result.error || 'Failed to submit manual scan.';
+    }
+  } finally {
+    tab.manualScanBusy = false;
+    tab.els.manualScanBtn.disabled = false;
+  }
+}
+
+// ---- Printer panel ----
+// A diagnostic/setup panel, not a label editor — select which installed
+// Windows printer is the Zebra GK420D, confirm the bridge can see it, and
+// run two kinds of test print: a bridge-generated calibration pattern (for
+// checking physical size/feed) and a reprint of a real, already-rendered
+// delivery label (for checking the whole real pipeline) — see
+// printer-service.js and print-job-client.js's reprintJob.
+
+function setPrinterStatusBadge(status, message) {
+  printerStatusBadge.className = `badge ${status}`;
+  printerStatusBadge.textContent = status.charAt(0).toUpperCase() + status.slice(1);
+  printerStatusMessage.textContent = message || '';
+}
+
+async function refreshPrinterList() {
+  const desired = printerSelect.value;
+  const result = await window.comBridge.listPrinters();
+
+  printerSelect.innerHTML = '';
+
+  if (!result.supported) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'Not available on this platform (Windows only)';
+    option.disabled = true;
+    printerSelect.appendChild(option);
+    return;
+  }
+
+  if (result.printers.length === 0) {
+    const option = document.createElement('option');
+    option.value = '';
+    option.textContent = 'No printers found';
+    option.disabled = true;
+    printerSelect.appendChild(option);
+    return;
+  }
+
+  for (const printer of result.printers) {
+    const option = document.createElement('option');
+    option.value = printer.name;
+    option.textContent = printer.isOffline ? `${printer.name} (offline)` : printer.name;
+    printerSelect.appendChild(option);
+  }
+
+  const configuredName = await window.comBridge.getPrinterName();
+  const toSelect = desired || configuredName;
+  if (toSelect) {
+    ensureOptionExists(printerSelect, toSelect);
+    printerSelect.value = toSelect;
+  }
+}
+
+async function checkConfiguredPrinterStatus() {
+  const configuredName = await window.comBridge.getPrinterName();
+  if (!configuredName) {
+    setPrinterStatusBadge('disconnected', 'Not configured');
+    return;
+  }
+
+  const status = await window.comBridge.getPrinterStatus(configuredName);
+  if (!status.supported) {
+    setPrinterStatusBadge('error', `${configuredName} — not checkable on this platform (Windows only)`);
+    return;
+  }
+  if (!status.found) {
+    setPrinterStatusBadge('error', `${configuredName} — not found`);
+    return;
+  }
+  if (status.offline) {
+    setPrinterStatusBadge('error', `${configuredName} — offline`);
+    return;
+  }
+  setPrinterStatusBadge('connected', configuredName);
+}
+
+printerRefreshBtn.addEventListener('click', () => refreshPrinterList());
+
+printerSaveBtn.addEventListener('click', async () => {
+  await window.comBridge.savePrinterName(printerSelect.value);
+  flashSaved(printerSavedFlash);
+  await checkConfiguredPrinterStatus();
+});
+
+printerCheckBtn.addEventListener('click', () => checkConfiguredPrinterStatus());
+
+printTestPatternBtn.addEventListener('click', async () => {
+  printerTestResult.textContent = 'Printing test pattern…';
+  const widthMm = Number(testWidthMmInput.value);
+  const heightMm = Number(testHeightMmInput.value);
+  const result = await window.comBridge.printTestPattern({ widthMm, heightMm });
+  printerTestResult.textContent = result.ok
+    ? `Test pattern (${widthMm}x${heightMm}mm) submitted.`
+    : `Failed: ${result.error}`;
+});
+
+reprintTestBtn.addEventListener('click', async () => {
+  const jobId = reprintJobIdInput.value.trim();
+  if (!jobId) {
+    printerTestResult.textContent = 'Enter a job id to reprint.';
+    return;
+  }
+  printerTestResult.textContent = `Requesting reprint of ${jobId}…`;
+  const result = await window.comBridge.reprintTestJob(jobId);
+  printerTestResult.textContent = result.ok
+    ? `Reprint of ${jobId} queued — see Print Jobs below.`
+    : `Failed: ${result.error}`;
+});
+
 // ---- Dashboard tab button (pinned, not closable) ----
 
 dashboardTabButton = document.createElement('button');
@@ -490,6 +715,10 @@ apiUrlInput.addEventListener('change', () => {
 
 clearRecentBtn.addEventListener('click', () => {
   recentScansBody.innerHTML = '';
+});
+
+clearPrintJobsBtn.addEventListener('click', () => {
+  printJobsBody.innerHTML = '';
 });
 
 // ---- IPC subscriptions (routed by tabId, also feed the dashboard) ----
@@ -532,6 +761,10 @@ window.comBridge.onApiResult((result) => {
   updateLogRowApiResult(recentScansBody, result);
 });
 
+window.comBridge.onPrintJobEvent((event) => {
+  upsertPrintJobRow(event);
+});
+
 // ---- Init ----
 
 async function init() {
@@ -550,6 +783,9 @@ async function init() {
   setActiveTab('dashboard');
   renderConnectionsTable();
   await refreshAllPorts();
+
+  await refreshPrinterList();
+  await checkConfiguredPrinterStatus();
 }
 
 init();

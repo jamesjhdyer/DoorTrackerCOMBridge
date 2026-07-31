@@ -17,6 +17,42 @@
     <span id="api-url-saved" class="saved-flash"></span>
   </section>
 
+  <section class="controls printer-section">
+    <div class="field">
+      <label>Printer <span class="hint">(Zebra GK420D, Windows only)</span></label>
+      <select id="printer-select"></select>
+      <button id="printer-refresh-btn" title="Refresh installed printers">Refresh</button>
+    </div>
+    <div class="field buttons">
+      <button id="printer-save-btn">Save Printer</button>
+      <button id="printer-check-btn">Check Status</button>
+    </div>
+    <span id="printer-saved" class="saved-flash"></span>
+    <div class="status-bar">
+      <span>Configured printer:</span>
+      <span id="printer-status-badge" class="badge disconnected">Not configured</span>
+      <span id="printer-status-message" class="status-message"></span>
+    </div>
+
+    <div class="printer-test-row">
+      <div class="field">
+        <label>Test label size (mm)</label>
+        <input id="test-width-mm" type="number" min="1" value="89" style="width: 60px" /> &times;
+        <input id="test-height-mm" type="number" min="1" value="36" style="width: 60px" />
+        <button id="print-test-pattern-btn">Print Test Pattern</button>
+      </div>
+    </div>
+
+    <div class="printer-test-row">
+      <div class="field field-wide">
+        <label for="reprint-job-id-input">Reprint an existing job (for testing with a real label)</label>
+        <input id="reprint-job-id-input" type="text" placeholder="PJ-..." />
+        <button id="reprint-test-btn">Reprint</button>
+      </div>
+    </div>
+    <span id="printer-test-result" class="status-message"></span>
+  </section>
+
   <div class="tab-bar" id="tab-bar">
     <!-- Dashboard tab button + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
     <button id="add-tab-btn" class="add-tab-btn" title="Add a new COM port connection">+</button>
@@ -56,6 +92,24 @@
           </tr>
         </thead>
         <tbody id="recent-scans-body"></tbody>
+      </table>
+    </div>
+
+    <div class="log-section">
+      <div class="log-header">
+        <h2>Print Jobs</h2>
+        <button id="clear-print-jobs-btn">Clear</button>
+      </div>
+      <table id="print-jobs-table">
+        <thead>
+          <tr>
+            <th>Timestamp</th>
+            <th>Job ID</th>
+            <th>Status</th>
+            <th>Message</th>
+          </tr>
+        </thead>
+        <tbody id="print-jobs-body"></tbody>
       </table>
     </div>
   </section>
@@ -100,6 +154,17 @@
         <span>Status:</span>
         <span class="badge disconnected status-badge">Disconnected</span>
         <span class="status-message"></span>
+      </section>
+
+      <section class="controls manual-scan-section">
+        <div class="field field-wide">
+          <label>Manual Scan <span class="hint">(testing only — simulates a scanner input for this tab's station)</span></label>
+          <div class="manual-scan-row">
+            <input class="manual-scan-input" type="text" placeholder="e.g. 5432-D" />
+            <button class="manual-scan-btn">Submit</button>
+          </div>
+        </div>
+        <span class="manual-scan-result status-message"></span>
       </section>
 
       <section class="log-section">

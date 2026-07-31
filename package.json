@@ -7,11 +7,13 @@
   "private": true,
   "scripts": {
     "start": "electron .",
+    "test": "node --test",
     "pack": "electron-builder --dir",
     "dist": "electron-builder",
     "dist:win": "electron-builder --win --publish never"
   },
   "dependencies": {
+    "pngjs": "^7.0.0",
     "serialport": "^12.0.0"
   },
   "devDependencies": {
@@ -26,6 +28,7 @@
     },
     "files": [
       "src/**/*",
+      "!src/**/*.test.js",
       "package.json"
     ],
     "asarUnpack": [
