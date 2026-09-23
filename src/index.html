@@ -57,9 +57,73 @@
   <datalist id="manual-scan-station-list"></datalist>
 
   <div class="tab-bar" id="tab-bar">
-    <!-- Dashboard tab button + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
+    <!-- Dashboard and Delivery Photos tab buttons + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
     <button id="add-tab-btn" class="add-tab-btn" title="Add a new COM port connection">+</button>
   </div>
+
+  <section id="panel-delivery-photos" class="tab-panel">
+    <div class="log-section">
+      <h2>Delivery Photo Service</h2>
+      <div class="status-bar">
+        <span>Service:</span>
+        <span id="dp-service-badge" class="badge disconnected">Not set up</span>
+      </div>
+      <div class="status-bar">
+        <span>iPad service:</span>
+        <span id="dp-ipad-badge" class="badge disconnected">Unavailable</span>
+      </div>
+      <div class="status-bar">
+        <span>Network storage:</span>
+        <span id="dp-storage-badge" class="badge disconnected">Unknown</span>
+      </div>
+
+      <table class="dp-facts">
+        <tbody>
+          <tr><td>iPad address</td><td id="dp-address">-</td><td><button id="dp-copy-address-btn" disabled>Copy</button></td></tr>
+          <tr><td>Photo folder</td><td id="dp-photo-root" colspan="2">-</td></tr>
+          <tr><td>Photos filed today</td><td id="dp-filed-today" colspan="2">0</td></tr>
+          <tr><td>Failed today</td><td id="dp-failed-today" colspan="2">0</td></tr>
+          <tr><td>Last problem</td><td id="dp-last-error" colspan="2">-</td></tr>
+        </tbody>
+      </table>
+
+      <div class="field buttons">
+        <button id="dp-start-btn">Start Photo Service</button>
+        <button id="dp-stop-btn">Stop Photo Service</button>
+        <button id="dp-test-storage-btn">Test Network Storage</button>
+        <button id="dp-open-folder-btn">Open Delivery Photographs Folder</button>
+        <button id="dp-open-logs-btn">Open Logs</button>
+      </div>
+      <pre id="dp-test-result" class="dp-test-result" hidden></pre>
+    </div>
+
+    <div class="log-section">
+      <h2>Delivery Photos - Set Up</h2>
+      <p class="hint">The iPad reaches this PC using the local address below - no internet, no website involved.</p>
+      <div class="controls">
+        <div class="field field-wide">
+          <label for="dp-hostname-input">Local address <span class="hint">(must end in .local)</span></label>
+          <input id="dp-hostname-input" type="text" placeholder="door-tracker.local" />
+        </div>
+        <div class="field">
+          <label for="dp-port-input">Port</label>
+          <input id="dp-port-input" type="number" min="1024" max="65535" style="width: 90px" />
+        </div>
+        <div class="field field-wide">
+          <label for="dp-root-input">Photo archive folder <span class="hint">(a \\server\share\... path, not a drive letter)</span></label>
+          <input id="dp-root-input" type="text" placeholder="\\SERVER\Share\Delivery Photographs" />
+        </div>
+        <div class="field">
+          <label><input type="checkbox" id="dp-autostart-input" /> Start automatically with this app</label>
+        </div>
+        <div class="field buttons">
+          <button id="dp-save-btn">Save</button>
+        </div>
+        <span id="dp-saved-flash" class="saved-flash"></span>
+      </div>
+      <p id="dp-save-error" class="dp-save-error" hidden></p>
+    </div>
+  </section>
 
   <section id="panel-dashboard" class="tab-panel">
     <div class="log-section">

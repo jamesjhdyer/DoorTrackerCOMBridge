@@ -391,3 +391,32 @@ th {
 tbody tr:hover {
   background: #f9fafb;
 }
+
+/* ---- Delivery Photos panel ---- */
+
+.dp-facts {
+  margin-bottom: 16px;
+}
+.dp-facts td:first-child {
+  color: #666;
+  width: 200px;
+}
+.dp-facts td:nth-child(2) {
+  font-weight: 600;
+}
+
+.dp-test-result {
+  background: #0f172a;
+  color: #d1fae5;
+  padding: 12px 16px;
+  border-radius: 6px;
+  font-size: 13px;
+  white-space: pre-wrap;
+  margin-top: 12px;
+}
+
+.dp-save-error {
+  color: #b91c1c;
+  font-size: 13px;
+  margin-top: 8px;
+}

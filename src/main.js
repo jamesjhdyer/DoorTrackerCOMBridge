@@ -1,7 +1,8 @@
-const { app, BrowserWindow, ipcMain } = require('electron');
+const { app, BrowserWindow, ipcMain, shell } = require('electron');
 const path = require('path');
 const fs = require('fs');
 const { randomUUID } = require('crypto');
+const { fork } = require('child_process');
 const { SerialPort } = require('serialport');
 const { deriveApiBase, fetchPendingJobs, reprintJob } = require('./print-job-client');
 const { PrintJobProcessor } = require('./print-job-processor');
@@ -9,6 +10,8 @@ const { createPrintAttemptStore } = require('./print-attempt-store');
 const printerSettings = require('./printer-settings');
 const windowsPrinter = require('./printing/windows-printer');
 const { buildTestPatternZpl } = require('./printing/zpl-image');
+const deliveryPhotosConfig = require('./delivery-photos/config');
+const { runInWorker: runDeliveryPhotosWorkerOp } = require('./delivery-photos/worker-runner');
 
 let mainWindow = null;
 
@@ -41,6 +44,77 @@ const DEFAULT_SETTINGS = {
   ]
 };
 
+// ---- Delivery Photos ----
+//
+// Runs as a SEPARATE, isolated child process (delivery-photos/worker-entry.js),
+// never inside this process - see that file's own header comment for why. This
+// object only supervises it: starts it, restarts it if it ever crashes
+// unexpectedly, and relays its status to the renderer. A hung network drive or
+// a crash inside the Delivery Photos worker can never stall a COM port read or
+// a print job; the reverse is equally true (this process being busy printing
+// never delays a photograph upload, since that all happens in the OTHER process).
+const DELIVERY_PHOTOS_HOME = () => path.join(app.getPath('userData'), 'delivery-photos');
+const DELIVERY_PHOTOS_WORKER_ENTRY = path.join(__dirname, 'delivery-photos', 'worker-entry.js');
+const DELIVERY_PHOTOS_RESTART_DELAY_MS = 2000;
+
+const deliveryPhotos = {
+  child: null,
+  status: null, // the latest status.json contents this worker reported, or null before it has said anything
+  stoppedDeliberately: false,
+  restartTimer: null
+};
+
+function sendDeliveryPhotosStatus() {
+  if (mainWindow && !mainWindow.isDestroyed()) {
+    mainWindow.webContents.send('delivery-photos-status', deliveryPhotos.status);
+  }
+}
+
+function startDeliveryPhotosWorker() {
+  if (deliveryPhotos.child) return; // already running
+  clearTimeout(deliveryPhotos.restartTimer);
+  deliveryPhotos.stoppedDeliberately = false;
+
+  const child = fork(DELIVERY_PHOTOS_WORKER_ENTRY, [], {
+    env: { ...process.env, DELIVERY_PHOTOS_HOME: DELIVERY_PHOTOS_HOME() },
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+  });
+  deliveryPhotos.child = child;
+
+  child.on('message', (message) => {
+    if (message && message.event === 'status') {
+      deliveryPhotos.status = message.status;
+      sendDeliveryPhotosStatus();
+    }
+  });
+
+  child.on('exit', () => {
+    deliveryPhotos.child = null;
+    if (deliveryPhotos.stoppedDeliberately) return;
+    // Crashed on its own - scanner/printing are completely unaffected; only
+    // this one worker restarts, after a short pause rather than a tight loop.
+    deliveryPhotos.status = { state: 'restarting', lastError: (deliveryPhotos.status && deliveryPhotos.status.lastError) || 'It stopped unexpectedly.' };
+    sendDeliveryPhotosStatus();
+    deliveryPhotos.restartTimer = setTimeout(startDeliveryPhotosWorker, DELIVERY_PHOTOS_RESTART_DELAY_MS);
+  });
+}
+
+function stopDeliveryPhotosWorker() {
+  clearTimeout(deliveryPhotos.restartTimer);
+  deliveryPhotos.stoppedDeliberately = true;
+  if (!deliveryPhotos.child) return;
+  deliveryPhotos.child.send({ cmd: 'stop' });
+  const child = deliveryPhotos.child;
+  setTimeout(() => {
+    if (deliveryPhotos.child === child) child.kill('SIGKILL'); // did not exit gracefully in time
+  }, 5000).unref();
+}
+
+function reloadDeliveryPhotosWorker() {
+  if (deliveryPhotos.child) deliveryPhotos.child.send({ cmd: 'reload' });
+  else startDeliveryPhotosWorker();
+}
+
 function createWindow() {
   mainWindow = new BrowserWindow({
     width: 1100,
@@ -55,13 +129,26 @@ function createWindow() {
   mainWindow.loadFile(path.join(__dirname, 'index.html'));
 }
 
-app.whenReady().then(createWindow);
+app.whenReady().then(() => {
+  createWindow();
+  // Delivery Photos starts with the app, the same way it is offered in the UI
+  // ("Automatic start of photo service") - only if it has actually been set
+  // up and that setting is on; loadConfig() reports "not set up" harmlessly
+  // otherwise rather than starting a worker with nothing to do.
+  const configured = deliveryPhotosConfig.loadConfig({ filePath: path.join(DELIVERY_PHOTOS_HOME(), 'config.json') });
+  if (configured.ok && configured.config.autoStart) startDeliveryPhotosWorker();
+});
 
 app.on('window-all-closed', () => {
   closeAllConnections();
+  stopDeliveryPhotosWorker();
   if (process.platform !== 'darwin') {
     app.quit();
   }
+});
+
+app.on('before-quit', () => {
+  stopDeliveryPhotosWorker();
 });
 
 // ---- Settings persistence ----
@@ -533,4 +620,72 @@ ipcMain.handle('disconnect-port', async (event, { tabId } = {}) => {
       resolve({ ok: true });
     });
   });
+});
+
+// ---- Delivery Photos IPC handlers ----
+// See the "Delivery Photos" block above for the worker process itself; these
+// handlers are the UI's only way to reach it - settings on disk, and the
+// two commands (reload/stop) the worker already listens for.
+
+function deliveryPhotosConfigPath() {
+  return path.join(DELIVERY_PHOTOS_HOME(), 'config.json');
+}
+
+ipcMain.handle('get-delivery-photos-status', async () => deliveryPhotos.status);
+
+ipcMain.handle('get-delivery-photos-config', async () => {
+  const result = deliveryPhotosConfig.loadConfig({ filePath: deliveryPhotosConfigPath() });
+  return result.ok ? { ok: true, config: result.config } : { ok: false, notSetUp: result.notSetUp, errors: result.errors };
+});
+
+ipcMain.handle('save-delivery-photos-config', async (event, raw) => {
+  const result = deliveryPhotosConfig.validateConfig(raw || {});
+  if (!result.ok) return { ok: false, errors: result.errors };
+  deliveryPhotosConfig.saveConfig(result.config, deliveryPhotosConfigPath());
+  reloadDeliveryPhotosWorker(); // picks up the new settings immediately, without a restart
+  return { ok: true, config: result.config };
+});
+
+ipcMain.handle('start-delivery-photos-service', async () => {
+  startDeliveryPhotosWorker();
+  return { ok: true };
+});
+
+ipcMain.handle('stop-delivery-photos-service', async () => {
+  stopDeliveryPhotosWorker();
+  return { ok: true };
+});
+
+// Runs inside a freshly forked worker process (same isolation as the real
+// archive engine - see worker-runner.js) so a hung network drive can only
+// ever hang THIS one check, never the running Delivery Photos server itself.
+ipcMain.handle('test-delivery-photos-storage', async () => {
+  const result = deliveryPhotosConfig.loadConfig({ filePath: deliveryPhotosConfigPath() });
+  if (!result.ok) return { ok: false, error: result.notSetUp ? 'Not set up yet.' : result.errors.join(' ') };
+  try {
+    const report = await runDeliveryPhotosWorkerOp('storage-test', { root: result.config.photoRoot }, { timeoutMs: 60000 });
+    return { ok: true, steps: report.steps };
+  } catch (err) {
+    return { ok: false, error: err.message };
+  }
+});
+
+ipcMain.handle('open-delivery-photographs-folder', async () => {
+  const result = deliveryPhotosConfig.loadConfig({ filePath: deliveryPhotosConfigPath() });
+  if (!result.ok) return { ok: false, error: 'Not set up yet.' };
+  const error = await shell.openPath(result.config.photoRoot);
+  return error ? { ok: false, error } : { ok: true };
+});
+
+ipcMain.handle('open-delivery-photos-logs-folder', async () => {
+  // The worker process is the only thing that writes here (see its own
+  // ensureLogsDir(), which additionally falls back to the OS temp folder if
+  // this one turns out to be read-only) - this is a plain "open what's
+  // there" action, so it is fine to just compute the normal path directly
+  // rather than route through that fallback logic for a folder this process
+  // never writes to itself.
+  const logsDir = path.join(DELIVERY_PHOTOS_HOME(), 'logs');
+  if (!fs.existsSync(logsDir)) return { ok: false, error: 'There are no logs yet - the Delivery Photos service has not run on this PC.' };
+  const error = await shell.openPath(logsDir);
+  return error ? { ok: false, error } : { ok: true };
 });

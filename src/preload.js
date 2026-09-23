@@ -28,3 +28,21 @@ contextBridge.exposeInMainWorld('comBridge', {
     ipcRenderer.on('print-job-event', (event, data) => callback(data));
   }
 });
+
+// A separate namespace, deliberately - the Delivery Photos worker is an
+// isolated process with its own settings and its own IPC surface (see
+// main.js's "Delivery Photos" section); nothing above this line changes.
+contextBridge.exposeInMainWorld('deliveryPhotos', {
+  getStatus: () => ipcRenderer.invoke('get-delivery-photos-status'),
+  getConfig: () => ipcRenderer.invoke('get-delivery-photos-config'),
+  saveConfig: (config) => ipcRenderer.invoke('save-delivery-photos-config', config),
+  start: () => ipcRenderer.invoke('start-delivery-photos-service'),
+  stop: () => ipcRenderer.invoke('stop-delivery-photos-service'),
+  testStorage: () => ipcRenderer.invoke('test-delivery-photos-storage'),
+  openPhotographsFolder: () => ipcRenderer.invoke('open-delivery-photographs-folder'),
+  openLogsFolder: () => ipcRenderer.invoke('open-delivery-photos-logs-folder'),
+
+  onStatus: (callback) => {
+    ipcRenderer.on('delivery-photos-status', (event, status) => callback(status));
+  }
+});

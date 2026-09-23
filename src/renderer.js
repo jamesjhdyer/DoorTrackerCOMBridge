@@ -86,6 +86,7 @@ const addTabBtn = document.getElementById('add-tab-btn');
 const tabPanelsContainer = document.getElementById('tab-panels');
 const tabTemplate = document.getElementById('tab-panel-template');
 const dashboardPanel = document.getElementById('panel-dashboard');
+const deliveryPhotosPanel = document.getElementById('panel-delivery-photos');
 const connectionsBody = document.getElementById('connections-body');
 const recentScansBody = document.getElementById('recent-scans-body');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
@@ -385,18 +386,31 @@ function setConnectedUiState(tab, isConnected) {
 
 // ---- Tab lifecycle ----
 
-let dashboardTabButton = null;
+// Pinned tabs - always present, never closable - keyed by the id passed to
+// setActiveTab(). Populated once each button/panel pair is built, below.
+const pinnedTabs = new Map(); // id -> { panel, button }
 
 function setActiveTab(id) {
   activeTabId = id;
-  dashboardPanel.classList.toggle('active', id === 'dashboard');
-  dashboardTabButton.classList.toggle('active', id === 'dashboard');
+  for (const [pinnedId, { panel, button }] of pinnedTabs) {
+    panel.classList.toggle('active', pinnedId === id);
+    button.classList.toggle('active', pinnedId === id);
+  }
 
   for (const tab of tabs.values()) {
     const isActive = tab.id === id;
     tab.els.panel.classList.toggle('active', isActive);
     tab.els.tabButton.classList.toggle('active', isActive);
   }
+}
+
+function buildPinnedTabButton(id, label) {
+  const btn = document.createElement('button');
+  btn.className = 'tab-btn dashboard-tab';
+  btn.textContent = label;
+  btn.addEventListener('click', () => setActiveTab(id));
+  tabBar.insertBefore(btn, addTabBtn);
+  return btn;
 }
 
 function buildTabButton(tab) {
@@ -774,13 +788,10 @@ reprintTestBtn.addEventListener('click', async () => {
     : `Failed: ${result.error}`;
 });
 
-// ---- Dashboard tab button (pinned, not closable) ----
+// ---- Pinned tab buttons (Dashboard, Delivery Photos - always present, not closable) ----
 
-dashboardTabButton = document.createElement('button');
-dashboardTabButton.className = 'tab-btn dashboard-tab';
-dashboardTabButton.textContent = 'Dashboard';
-dashboardTabButton.addEventListener('click', () => setActiveTab('dashboard'));
-tabBar.insertBefore(dashboardTabButton, addTabBtn);
+pinnedTabs.set('dashboard', { panel: dashboardPanel, button: buildPinnedTabButton('dashboard', 'Dashboard') });
+pinnedTabs.set('delivery-photos', { panel: deliveryPhotosPanel, button: buildPinnedTabButton('delivery-photos', 'Delivery Photos') });
 setActiveTab('dashboard');
 
 // ---- Static event listeners ----
@@ -871,3 +882,155 @@ async function init() {
 }
 
 init();
+
+// ---- Delivery Photos panel ----
+// A separate section (window.deliveryPhotos, from preload.js) talking to a
+// separate, isolated worker process - see main.js's "Delivery Photos" block.
+// Nothing here touches window.comBridge or any of the scanner/printer state
+// above.
+
+const dp = {
+  serviceBadge: document.getElementById('dp-service-badge'),
+  ipadBadge: document.getElementById('dp-ipad-badge'),
+  storageBadge: document.getElementById('dp-storage-badge'),
+  address: document.getElementById('dp-address'),
+  copyAddressBtn: document.getElementById('dp-copy-address-btn'),
+  photoRoot: document.getElementById('dp-photo-root'),
+  filedToday: document.getElementById('dp-filed-today'),
+  failedToday: document.getElementById('dp-failed-today'),
+  lastError: document.getElementById('dp-last-error'),
+  startBtn: document.getElementById('dp-start-btn'),
+  stopBtn: document.getElementById('dp-stop-btn'),
+  testStorageBtn: document.getElementById('dp-test-storage-btn'),
+  openFolderBtn: document.getElementById('dp-open-folder-btn'),
+  openLogsBtn: document.getElementById('dp-open-logs-btn'),
+  testResult: document.getElementById('dp-test-result'),
+  hostnameInput: document.getElementById('dp-hostname-input'),
+  portInput: document.getElementById('dp-port-input'),
+  rootInput: document.getElementById('dp-root-input'),
+  autoStartInput: document.getElementById('dp-autostart-input'),
+  saveBtn: document.getElementById('dp-save-btn'),
+  savedFlash: document.getElementById('dp-saved-flash'),
+  saveError: document.getElementById('dp-save-error')
+};
+
+function setBadge(el, status, text) {
+  el.className = `badge ${status}`;
+  el.textContent = text;
+}
+
+// Renders whatever the worker process most recently reported - see
+// worker-entry.js's Runtime.report(), relayed here via main.js's
+// 'delivery-photos-status' event. `status` is null before anything has
+// been heard yet (e.g. the service has never been started this session).
+function renderDeliveryPhotosStatus(status) {
+  if (!status || status.state === 'not_configured') {
+    setBadge(dp.serviceBadge, 'disconnected', 'Not set up');
+    setBadge(dp.ipadBadge, 'disconnected', 'Unavailable');
+    setBadge(dp.storageBadge, 'disconnected', 'Unknown');
+    dp.address.textContent = '-';
+    dp.copyAddressBtn.disabled = true;
+    dp.photoRoot.textContent = '-';
+    dp.lastError.textContent = (status && status.lastError) || '-';
+    return;
+  }
+
+  const running = status.state === 'running';
+  setBadge(dp.serviceBadge, running ? 'connected' : status.state === 'restarting' ? 'error' : 'disconnected', running ? 'Running' : status.state === 'stopped' ? 'Stopped' : status.state === 'restarting' ? 'Restarting…' : 'Error');
+  setBadge(dp.ipadBadge, running ? 'connected' : 'disconnected', running ? 'Available' : 'Unavailable');
+  setBadge(dp.storageBadge, running ? 'connected' : 'disconnected', running ? 'Connected' : 'Unknown');
+
+  dp.address.textContent = running && status.hostname ? `https://${status.hostname}:${status.port}/` : '-';
+  dp.copyAddressBtn.disabled = !(running && status.hostname);
+  dp.photoRoot.textContent = status.photoRoot || '-';
+  dp.filedToday.textContent = status.filedToday || 0;
+  dp.failedToday.textContent = status.failedToday || 0;
+  dp.lastError.textContent = status.lastError || '-';
+}
+
+dp.startBtn.addEventListener('click', async () => {
+  dp.startBtn.disabled = true;
+  try {
+    await window.deliveryPhotos.start();
+  } finally {
+    dp.startBtn.disabled = false;
+  }
+});
+
+dp.stopBtn.addEventListener('click', async () => {
+  dp.stopBtn.disabled = true;
+  try {
+    await window.deliveryPhotos.stop();
+  } finally {
+    dp.stopBtn.disabled = false;
+  }
+});
+
+dp.copyAddressBtn.addEventListener('click', () => {
+  if (dp.address.textContent && dp.address.textContent !== '-') navigator.clipboard.writeText(dp.address.textContent);
+});
+
+dp.testStorageBtn.addEventListener('click', async () => {
+  dp.testStorageBtn.disabled = true;
+  dp.testResult.hidden = false;
+  dp.testResult.textContent = 'Testing… this can take a little while if the network drive is slow to respond.';
+  try {
+    const result = await window.deliveryPhotos.testStorage();
+    if (result.ok) {
+      dp.testResult.textContent = result.steps.map((s) => `${s.ok ? '[PASS]' : '[FAIL]'} ${s.label}${s.detail ? ' - ' + s.detail : ''}`).join('\n');
+    } else {
+      dp.testResult.textContent = `[FAIL] ${result.error}`;
+    }
+  } finally {
+    dp.testStorageBtn.disabled = false;
+  }
+});
+
+dp.openFolderBtn.addEventListener('click', async () => {
+  const result = await window.deliveryPhotos.openPhotographsFolder();
+  if (!result.ok) alert(result.error);
+});
+
+dp.openLogsBtn.addEventListener('click', async () => {
+  const result = await window.deliveryPhotos.openLogsFolder();
+  if (!result.ok) alert(result.error);
+});
+
+dp.saveBtn.addEventListener('click', async () => {
+  dp.saveError.hidden = true;
+  dp.saveBtn.disabled = true;
+  try {
+    const result = await window.deliveryPhotos.saveConfig({
+      hostname: dp.hostnameInput.value.trim(),
+      port: dp.portInput.value ? Number(dp.portInput.value) : undefined,
+      photoRoot: dp.rootInput.value.trim(),
+      autoStart: dp.autoStartInput.checked
+    });
+    if (result.ok) {
+      flashSaved(dp.savedFlash);
+      dp.hostnameInput.value = result.config.hostname;
+      dp.portInput.value = result.config.port;
+      dp.rootInput.value = result.config.photoRoot;
+    } else {
+      dp.saveError.hidden = false;
+      dp.saveError.textContent = result.errors.join(' ');
+    }
+  } finally {
+    dp.saveBtn.disabled = false;
+  }
+});
+
+window.deliveryPhotos.onStatus((status) => renderDeliveryPhotosStatus(status));
+
+async function initDeliveryPhotos() {
+  const result = await window.deliveryPhotos.getConfig();
+  if (result.ok) {
+    dp.hostnameInput.value = result.config.hostname;
+    dp.portInput.value = result.config.port;
+    dp.rootInput.value = result.config.photoRoot;
+    dp.autoStartInput.checked = result.config.autoStart;
+  }
+  renderDeliveryPhotosStatus(await window.deliveryPhotos.getStatus());
+}
+
+initDeliveryPhotos();

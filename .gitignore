@@ -1,2 +1,8 @@
 node_modules/
 dist/
+
+# Delivery Photos: local-dev fallback home (real installs use Electron's
+# userData folder, outside the repo entirely - see src/delivery-photos/paths.js).
+# Never contains a secret (there is no bridge key/API key in this design), but
+# does contain a real generated TLS private key and possibly local test data.
+data/

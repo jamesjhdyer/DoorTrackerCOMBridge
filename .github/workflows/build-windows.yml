@@ -1,10 +1,22 @@
 name: Build Windows
 
+# Builds the one Windows download for this app: scanners, label printing, AND
+# Delivery Photos, all in a single installer/portable exe. Runs on every push
+# to main, or press "Run workflow" on the Actions tab.
+#
+# The automated tests run on this real Windows runner and MUST pass before a
+# package is built - there is no continue-on-error here. A failing test fails
+# this whole build; no package is produced or published from code whose tests
+# did not pass.
+
 on:
   push:
     branches:
       - main
   workflow_dispatch: {}
+
+permissions:
+  contents: read
 
 jobs:
   build-windows:
@@ -28,8 +40,36 @@ jobs:
             npm install
           fi
 
+      # Runs on a real Windows machine: the scanner/printer tests (including
+      # the real Win32 raw-printer submission path and the print-job recovery
+      # logic) and every Delivery Photos test - real forked worker processes,
+      # a real generated certificate actually TLS-handshaked over localhost,
+      # a real UDP mDNS round-trip (skips cleanly rather than failing if this
+      # particular runner's network does not allow multicast - see
+      # src/delivery-photos/mdns.test.js), and the real local HTTPS server.
+      # If this fails, the build stops here.
+      - name: Automated checks
+        run: npm test
+
       - name: Build Windows app
         run: npm run dist:win
+
+      # A config mistake in package.json's "files"/"asarUnpack" (which files
+      # actually get packaged) would not show up as a test failure or even a
+      # build failure - electron-builder would happily ship an app missing
+      # the Delivery Photos web assets. Checked here instead, against the
+      # real packaged output, so that specific mistake can never ship silently.
+      - name: Verify Delivery Photos assets are really in the package
+        shell: bash
+        run: |
+          UNPACKED="dist/win-unpacked/resources/app.asar.unpacked/delivery-photos-web"
+          for f in "index.html" "app.js" "camera.js" "scanner.js" "vendor/zxing/zxing-reader.js" "vendor/zxing/zxing_reader.wasm"; do
+            if [ ! -f "$UNPACKED/$f" ]; then
+              echo "Missing from the packaged app: delivery-photos-web/$f"
+              exit 1
+            fi
+          done
+          echo "Delivery Photos web assets confirmed present in the built package."
 
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4

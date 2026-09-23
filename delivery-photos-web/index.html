@@ -1,0 +1,92 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
+<title>Delivery Photos</title>
+<link rel="icon" href="data:," />
+<link rel="stylesheet" href="style.css" />
+</head>
+<body>
+
+<!-- ============================= SCAN ============================= -->
+<section id="scan-screen" class="screen">
+  <h1 class="brand">DELIVERY PHOTOS</h1>
+  <p class="scan-instruction" id="scan-message">Point the camera at the delivery note code.</p>
+
+  <div class="camera-frame">
+    <video id="scan-video" autoplay playsinline muted></video>
+    <div class="scan-target" aria-hidden="true"></div>
+  </div>
+  <canvas id="scan-canvas" hidden></canvas>
+
+  <p id="camera-warning" class="warning" hidden></p>
+
+  <button type="button" id="manual-entry-button" class="link-button">Type the code instead</button>
+
+  <form id="manual-entry-form" class="manual-entry-form" hidden>
+    <label for="manual-entry-input">Delivery code</label>
+    <input id="manual-entry-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" placeholder="5698-DELIV" />
+    <div class="manual-entry-buttons">
+      <button type="button" id="manual-entry-cancel" class="secondary-button">Cancel</button>
+      <button type="submit" class="primary-button">Use this code</button>
+    </div>
+  </form>
+</section>
+
+<!-- ============================ CAPTURE ============================ -->
+<section id="capture-screen" class="screen" hidden>
+  <header class="capture-header">
+    <div>
+      <div class="reference-label" id="reference-label">5698-DELIV</div>
+      <div class="reference-sub" id="reference-sub"></div>
+    </div>
+    <button type="button" id="abandon-button" class="link-button link-button-danger">Scan a different code</button>
+  </header>
+
+  <div class="camera-frame">
+    <video id="capture-video" autoplay playsinline muted></video>
+  </div>
+  <canvas id="capture-canvas" hidden></canvas>
+
+  <div class="shutter-row">
+    <button type="button" id="shutter-button" class="shutter-button" aria-label="Take photograph"></button>
+    <label class="fallback-label">
+      or choose from camera roll
+      <input type="file" id="fallback-input" accept="image/*" capture="environment" multiple hidden />
+    </label>
+  </div>
+
+  <div id="thumbnails" class="thumbnails" aria-live="polite"></div>
+  <p id="photo-count" class="photo-count">0 photographs</p>
+
+  <button type="button" id="done-button" class="primary-button done-button" disabled>DONE</button>
+</section>
+
+<!-- ============================= RESULT ============================= -->
+<section id="result-screen" class="screen" hidden>
+  <div class="result-panel">
+    <div id="result-icon" class="result-icon">✓</div>
+    <h2 id="result-heading">Saved</h2>
+    <div id="result-reference" class="result-reference">5698-DELIV</div>
+    <p id="result-detail" class="result-detail">Safe to continue.</p>
+    <button type="button" id="retry-button" class="primary-button" hidden>RETRY FAILED PHOTOS</button>
+    <button type="button" id="scan-next-button" class="primary-button">SCAN NEXT DELIVERY</button>
+  </div>
+</section>
+
+<!-- ========================= SAVING OVERLAY ========================= -->
+<div id="saving-overlay" class="saving-overlay" hidden>
+  <div class="saving-box">
+    <div class="spinner" aria-hidden="true"></div>
+    <p id="saving-progress">Saving...</p>
+  </div>
+</div>
+
+<script src="vendor/zxing/zxing-reader.js"></script>
+<script src="reference.js"></script>
+<script src="camera.js"></script>
+<script src="scanner.js"></script>
+<script src="app.js"></script>
+</body>
+</html>
