@@ -67,7 +67,9 @@
       "Bash(pkill -f mock-api.mjs)",
       "Bash(rm -f '/Users/jj/Library/Application Support/Door Tracker COM Bridge/settings.json')",
       "Bash(npx vercel *)",
-      "Bash(cat /Users/jj/Documents/door-production-tracker/lib/supabase.ts 2>/dev/null | head -30)"
+      "Bash(cat /Users/jj/Documents/door-production-tracker/lib/supabase.ts 2>/dev/null | head -30)",
+      "Bash(echo \"=== Primary working directory ===\" && ls -la /Users/jj/Documents/DoorTrackerCOMBridge && echo \"\\\\n=== Is it a git repo, what's it for? ===\" && cat /Users/jj/Documents/DoorTrackerCOMBridge/README.md 2>/dev/null | head -50 && echo \"\\\\n=== Documents folder overview ===\" && ls -la /Users/jj/Documents)",
+      "Read(//Users/jj/Documents/**)"
     ],
     "additionalDirectories": [
       "/Users/jj/Documents/door-production-tracker/lib",
