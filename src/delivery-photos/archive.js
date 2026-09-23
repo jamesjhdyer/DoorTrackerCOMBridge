@@ -40,8 +40,12 @@ class ArchiveError extends Error {
   }
 }
 
-function checkRoot(root, allowDriveLetter) {
-  const info = classifyRoot(root);
+// `platform` defaults to classifyRoot's own default (the real process.platform)
+// and exists as an explicit parameter purely so the automated tests can prove
+// these Windows rules from any development machine, exactly like config.js and
+// storage-test.js already do - it is never set by any real caller.
+function checkRoot(root, allowDriveLetter, platform) {
+  const info = classifyRoot(root, platform);
   if (!info.ok) throw new ArchiveError('BAD_ROOT', `the archive folder is not usable: ${info.reason}`);
   if (info.kind === 'drive-letter' && !allowDriveLetter) throw new ArchiveError('BAD_ROOT', 'a drive letter cannot be used by the Delivery Photos worker');
 }
@@ -74,8 +78,8 @@ async function ensureDirectory(dirPath) {
 }
 
 // Is the archive folder there, and how much room is left? (Read-only.)
-async function probeRoot({ root, allowDriveLetter = false }) {
-  checkRoot(root, allowDriveLetter);
+async function probeRoot({ root, allowDriveLetter = false, platform }) {
+  checkRoot(root, allowDriveLetter, platform);
   await requireRoot(root);
   const space = await fsOps.getFreeSpace(root);
   return { ok: true, freeBytes: space.ok ? space.freeBytes : null };
@@ -94,8 +98,8 @@ async function listPhotoFiles(folder) {
 
 // Files the Bridge wrote and then had to give up on (killed part-way) are removed
 // at the start of the next job. Only names that match our own <uuid>.part pattern are touched.
-async function sweepIncoming({ root, allowDriveLetter = false }) {
-  checkRoot(root, allowDriveLetter);
+async function sweepIncoming({ root, allowDriveLetter = false, platform }) {
+  checkRoot(root, allowDriveLetter, platform);
   await requireRoot(root);
   const incoming = resolveInsideRoot(root, [INCOMING_DIR_NAME]);
   try {
@@ -109,7 +113,7 @@ async function sweepIncoming({ root, allowDriveLetter = false }) {
 // Files one photograph (already downloaded to the local spool) into <root>/<REFERENCE>/photo-NNN.jpg.
 // `hooks.afterPublish` exists only so tests can simulate a crash right after the rename.
 async function archivePhoto(params, hooks = {}) {
-  const { root, reference, photoId, spoolPath, sizeBytes, sha256, allowDriveLetter = false } = params;
+  const { root, reference, photoId, spoolPath, sizeBytes, sha256, allowDriveLetter = false, platform } = params;
 
   if (!UUID.test(String(photoId))) throw new ArchiveError('BAD_INPUT', 'invalid photograph id');
   if (!SHA256.test(String(sha256)) || !Number.isInteger(sizeBytes) || sizeBytes < 1) throw new ArchiveError('BAD_INPUT', 'invalid size or checksum');
@@ -123,7 +127,7 @@ async function archivePhoto(params, hooks = {}) {
     throw new ArchiveError('BAD_REFERENCE', err.message);
   }
 
-  checkRoot(root, allowDriveLetter);
+  checkRoot(root, allowDriveLetter, platform);
   await requireRoot(root);
 
   const data = await fs.readFile(spoolPath);

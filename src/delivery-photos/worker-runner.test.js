@@ -12,7 +12,7 @@ const { randomUUID } = require('node:crypto');
 
 const { runInWorker, WorkerError } = require('./worker-runner');
 const fsOps = require('./fs-ops');
-const { makeEnv, jpeg } = require('./helpers');
+const { makeEnv, jpeg, LOCAL_TEST_ROOT_OPTIONS } = require('./helpers');
 
 // The failure-injection hooks in src/worker.js are gated behind this switch (it is
 // inherited by the forked child); turn it on for this file's tests. The one test
@@ -22,7 +22,7 @@ process.env.DELIVERY_PHOTOS_TEST_HOOKS = '1';
 test('a normal operation answers with its real result', async () => {
   const env = makeEnv();
   try {
-    const result = await runInWorker('probe', { root: env.share }, { timeoutMs: 10000 });
+    const result = await runInWorker('probe', { root: env.share, ...LOCAL_TEST_ROOT_OPTIONS }, { timeoutMs: 10000 });
     assert.equal(result.ok, true);
   } finally {
     env.cleanup();
@@ -77,7 +77,7 @@ test('a worker that crashes after doing real work (simulating power loss mid-fil
     await assert.rejects(
       runInWorker(
         'archive',
-        { root: env.share, reference: '5698-DELIV', photoId: randomUUID(), spoolPath, sizeBytes: bytes.length, sha256: fsOps.sha256OfBuffer(bytes) },
+        { root: env.share, reference: '5698-DELIV', photoId: randomUUID(), spoolPath, sizeBytes: bytes.length, sha256: fsOps.sha256OfBuffer(bytes), ...LOCAL_TEST_ROOT_OPTIONS },
         { timeoutMs: 10000, testMode: 'crash-after-rename' }
       ),
       (err) => {
@@ -99,7 +99,7 @@ test('the test-only failure hooks have no effect unless DELIVERY_PHOTOS_TEST_HOO
   try {
     const env = makeEnv();
     try {
-      const result = await runInWorker('probe', { root: env.share }, { timeoutMs: 5000, testMode: 'hang' });
+      const result = await runInWorker('probe', { root: env.share, ...LOCAL_TEST_ROOT_OPTIONS }, { timeoutMs: 5000, testMode: 'hang' });
       assert.equal(result.ok, true, 'the "hang" test hook must be inert when the switch is off');
     } finally {
       env.cleanup();
@@ -113,7 +113,7 @@ test('the test-only failure hooks have no effect unless DELIVERY_PHOTOS_TEST_HOO
 test('several workers can run at once without interfering with each other', async () => {
   const env = makeEnv();
   try {
-    const results = await Promise.all(Array.from({ length: 5 }, () => runInWorker('probe', { root: env.share }, { timeoutMs: 10000 })));
+    const results = await Promise.all(Array.from({ length: 5 }, () => runInWorker('probe', { root: env.share, ...LOCAL_TEST_ROOT_OPTIONS }, { timeoutMs: 10000 })));
     for (const result of results) assert.equal(result.ok, true);
   } finally {
     env.cleanup();

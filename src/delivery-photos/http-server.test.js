@@ -14,7 +14,7 @@ const { randomUUID, createHash } = require('node:crypto');
 const { startServers } = require('./http-server');
 const { ensureCertificates } = require('./certs');
 const { runInWorker } = require('./worker-runner');
-const { makeEnv, jpeg, quietLogger } = require('./helpers');
+const { makeEnv, jpeg, quietLogger, LOCAL_TEST_ROOT_OPTIONS } = require('./helpers');
 
 process.env.DELIVERY_PHOTOS_TEST_HOOKS = '1';
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
@@ -36,7 +36,13 @@ async function withServer(env, overrides, fn) {
   const config = { hostname: 'localhost', port: reservePortPair(), photoRoot: env.share, maxPhotoBytes: 5 * 1000 * 1000, operationTimeoutSeconds: 10, ...overrides.config };
   const credentials = ensureCertificates(nodePath.join(env.home, 'certs'), config.hostname);
   const logger = overrides.logger || quietLogger();
-  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, allowDriveLetter: false, testMode: overrides.testMode });
+  // photoRoot is env.share, a real local temp folder - see LOCAL_TEST_ROOT_OPTIONS's
+  // own comment for why that needs the explicit test-only opt-in on a real Windows
+  // machine (including GitHub Actions' runners) even though it is a no-op on macOS.
+  // No test in this file is exercising the drive-letter REJECTION itself (that is
+  // covered in safe-path.test.js/archive.test.js/storage-test.test.js), so this is
+  // unconditional here rather than a per-test override.
+  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, ...LOCAL_TEST_ROOT_OPTIONS, testMode: overrides.testMode });
   await handle.listen();
   const agent = new https.Agent({ ca: credentials.caCert });
   try {

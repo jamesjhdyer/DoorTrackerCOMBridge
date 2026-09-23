@@ -46,6 +46,19 @@ test('the archive folder must be a network path; drive letters refused without t
   assert.equal(validateConfig({ ...good(), photoRoot: 'S:\\Photos' }, { ...WIN, allowDriveLetter: true }).ok, true);
 });
 
+// Every case named explicitly, individually, rather than trusting one example
+// to stand in for the rest - this is the rule that must never weaken: a real
+// delivery archive is never, ever a drive letter, on real Windows, in production.
+test('production Windows path rules exactly: UNC allowed, every drive letter rejected, relative rejected', () => {
+  assert.equal(validateConfig({ ...good(), photoRoot: '\\\\SERVER\\Share\\Delivery Photographs' }, WIN).ok, true, 'UNC path must be allowed');
+  for (const drive of ['S:\\Photos', 'Z:\\Photos', 'C:\\Photos', 'D:\\Photos']) {
+    const result = validateConfig({ ...good(), photoRoot: drive }, WIN);
+    assert.equal(result.ok, false, `${drive} must be rejected`);
+    assert.ok(result.errors.some((e) => /drive letter/.test(e)), `${drive} must be rejected specifically as a drive letter, not some other reason: ${result.errors}`);
+  }
+  assert.equal(validateConfig({ ...good(), photoRoot: 'relative\\path\\to\\photos' }, WIN).ok, false, 'a relative path must be rejected');
+});
+
 test('every problem is reported at once, in plain language', () => {
   const result = validateConfig({ hostname: '', photoRoot: '', port: -1 }, WIN);
   assert.equal(result.ok, false);
