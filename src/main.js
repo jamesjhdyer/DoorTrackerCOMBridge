@@ -71,15 +71,15 @@ function sendDeliveryPhotosStatus() {
 }
 
 // Test-only switches worker-entry.js/worker.js honour from the environment
-// (allowing a drive-letter archive root, forcing simulated Windows path
-// rules on another OS, and injecting failure hooks - used only by this
-// repo's own automated tests, see src/delivery-photos/helpers.js). The real,
-// packaged app must NEVER start with any of these active, however they got
-// into this process's own environment (a stray system/user variable left
-// over from something unrelated, say) - explicitly deleted here rather than
-// just trusting that nothing set them, so the production archive-root check
-// (UNC only, no drive letter, no exceptions) can never be silently bypassed.
-const DELIVERY_PHOTOS_DEV_ENV_VARS = ['DELIVERY_PHOTOS_ALLOW_DRIVE_LETTER', 'DELIVERY_PHOTOS_PLATFORM', 'DELIVERY_PHOTOS_TEST_HOOKS'];
+// (forcing simulated Windows path rules on another OS, and injecting failure
+// hooks - used only by this repo's own automated tests, see
+// src/delivery-photos/helpers.js). The real, packaged app must NEVER start
+// with any of these active, however they got into this process's own
+// environment (a stray system/user variable left over from something
+// unrelated, say) - explicitly deleted here rather than just trusting that
+// nothing set them, so a test-only path-rule simulation can never be
+// silently mistaken for the real platform in production.
+const DELIVERY_PHOTOS_DEV_ENV_VARS = ['DELIVERY_PHOTOS_PLATFORM', 'DELIVERY_PHOTOS_TEST_HOOKS', 'DELIVERY_PHOTOS_PROBE_INTERVAL_MS'];
 
 function productionWorkerEnv() {
   const env = { ...process.env, DELIVERY_PHOTOS_HOME: DELIVERY_PHOTOS_HOME() };

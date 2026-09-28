@@ -41,19 +41,25 @@ function testDirName() {
 // Returns a report the UI can show directly; throws StorageTestError with a
 // plain-language message on any real failure - never partially succeeds
 // silently.
-async function testNetworkStorage({ root, allowDriveLetter = false, platform } = {}) {
+async function testNetworkStorage({ root, platform } = {}) {
   const steps = [];
   const record = (label, ok, detail) => steps.push({ label, ok, detail: detail || '' });
 
   const rootInfo = classifyRoot(root, platform);
   if (!rootInfo.ok) throw new StorageTestError('root', `The archive folder is not usable: ${rootInfo.reason}`);
-  if (rootInfo.kind === 'drive-letter' && !allowDriveLetter) throw new StorageTestError('root', 'The archive folder is a mapped drive letter; use the \\\\server\\share\\... path.');
 
   let stats;
   try {
     stats = await fs.lstat(root);
   } catch (err) {
-    throw new StorageTestError('reachable', err.code === 'ENOENT' ? 'The archive folder does not exist, or the network drive is not reachable right now.' : `Could not open the archive folder (${err.code || err.message}).`);
+    if (err.code === 'ENOENT') {
+      // Same drive-letter-aware wording as archive.js's requireRoot(), so a
+      // person running this check right after logging in (before Windows has
+      // reconnected the drive) sees exactly which letter it is waiting for.
+      const message = rootInfo.kind === 'drive-letter' ? `Network drive unavailable — waiting for ${rootInfo.drive}:` : 'The archive folder does not exist, or the network drive is not reachable right now.';
+      throw new StorageTestError('reachable', message);
+    }
+    throw new StorageTestError('reachable', `Could not open the archive folder (${err.code || err.message}).`);
   }
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new StorageTestError('reachable', 'The archive folder is not a plain folder.');
   record('Folder reachable', true);

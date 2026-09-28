@@ -54,6 +54,32 @@ internet at all. It decodes one still frame at a time (grabbed from the
 live video via canvas, a few times a second) rather than the video stream
 continuously, and stops entirely once a valid code has been found.
 
+## The archive folder: a UNC path or a mapped drive letter
+
+`config.js` accepts either an absolute UNC path (`\\SERVER\Share\Delivery
+Photographs`) or a mapped drive letter (`S:\Delivery Photographs`) -
+`safe-path.js`'s `classifyRoot()` is the only place either form is judged,
+and whichever one is entered is used exactly as typed, never converted or
+guessed from one to the other.
+
+A drive letter works here specifically because the worker (`worker-entry.js`)
+always runs forked from the interactive, logged-in COM Bridge app - never as
+a Windows service or a scheduled task under a different account - so it sees
+the same drive mappings the person who set this up sees in File Explorer,
+the same way any other program they run does. That is also why a drive
+letter would NOT be safe if this were ever redeployed as a background
+service: a mapped drive exists only inside the Windows logon session that
+created it.
+
+Because a mapped drive can be slow to reconnect right after logging in (or
+can drop out later), the archive root is probed - read-only, through the
+same isolated, hard-timeout forked worker every real archive operation uses
+- once at startup and then periodically while running. If it is not
+reachable, the worker keeps running (the iPad still gets a clear, retryable
+error rather than the app crashing) and status reports something specific,
+for example "Network drive unavailable — waiting for S:"; once the drive
+reconnects, the next probe picks it up automatically, no restart needed.
+
 ## Saving a photograph
 
 `PUT /api/photos/<reference>/<uuid>` (raw JPEG body, `X-Photo-Sha256`

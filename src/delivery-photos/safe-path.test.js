@@ -3,12 +3,13 @@
 // Pure logic, no real filesystem I/O - classifyRoot() takes `platform` as a
 // parameter specifically so these rules can be proven correct for Windows
 // from any development machine, not just when the test happens to be
-// running on a real Windows box. This is the single place the production
-// rule ("the archive root must be a UNC path - never a drive letter, never
-// anything else") is proven directly; every other test file that opts a
-// real local temp folder in via LOCAL_TEST_ROOT_OPTIONS (see helpers.js) is
-// trusting THIS file to have already nailed down what "drive letter" and
-// "UNC" actually mean on Windows.
+// running on a real Windows box. This is the single place the archive root's
+// SHAPE rules are proven directly (a UNC path or a mapped drive letter are
+// both valid; a relative path, a bare share/drive root, and traversal/
+// device-namespace paths are never valid); every other test file that files
+// onto a real local temp folder (which is drive-letter-shaped on a real
+// Windows machine) is trusting THIS file to have already nailed down what
+// "drive letter" and "UNC" actually mean on Windows.
 
 const test = require('node:test');
 const assert = require('node:assert/strict');
@@ -33,7 +34,7 @@ test('the bare top of a share, with no sub-folder, is refused - never just \\\\s
   }
 });
 
-test('EVERY drive letter is classified as "drive-letter", not accepted as a network path - this is what the production rule rejects', () => {
+test('EVERY drive letter is classified as "drive-letter", kept distinct from a UNC path - both are accepted in production', () => {
   // Explicitly including D:\ - what GitHub Actions' own Windows runners use
   // for the checkout/temp folders, which is exactly what surfaced this gap.
   for (const letter of ['C', 'D', 'S', 'Z', 'c', 'z']) {

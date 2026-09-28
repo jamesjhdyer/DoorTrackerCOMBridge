@@ -27,9 +27,19 @@ const { startServers } = require('./http-server');
 const { runInWorker } = require('./worker-runner');
 
 const DEV_OPTIONS = {
-  allowDriveLetter: process.env.DELIVERY_PHOTOS_ALLOW_DRIVE_LETTER === '1',
   platform: process.env.DELIVERY_PHOTOS_PLATFORM || undefined // test-only: exercise Windows path rules on any OS
 };
+
+// How often the archive root is re-checked while the worker is running, so a
+// mapped drive that was not yet reconnected at startup (or that drops out
+// later) is noticed and reported without anyone needing to restart anything.
+// Kept short but not tight: fast enough to feel responsive after logging in,
+// far apart enough not to hammer a real network share. Overridable only for
+// the automated tests (so "retry once it becomes available" can be proven in
+// well under a second instead of really waiting 20 real seconds) - never set
+// in production, see main.js's DELIVERY_PHOTOS_DEV_ENV_VARS.
+const DRIVE_PROBE_INTERVAL_MS = Number(process.env.DELIVERY_PHOTOS_PROBE_INTERVAL_MS) || 20000;
+const DRIVE_PROBE_TIMEOUT_MS = 10000;
 
 class Runtime {
   constructor() {
@@ -38,6 +48,8 @@ class Runtime {
     this.logger = null;
     this.mdnsHandle = null;
     this.serverHandle = null;
+    this.probeTimer = null;
+    this.probing = false;
     this.stopped = false;
   }
 
@@ -48,6 +60,10 @@ class Runtime {
   }
 
   async stopServers() {
+    if (this.probeTimer) {
+      clearInterval(this.probeTimer);
+      this.probeTimer = null;
+    }
     if (this.mdnsHandle) {
       await this.mdnsHandle.stop().catch(() => {});
       this.mdnsHandle = null;
@@ -55,6 +71,27 @@ class Runtime {
     if (this.serverHandle) {
       await this.serverHandle.close().catch(() => {});
       this.serverHandle = null;
+    }
+  }
+
+  // Read-only reachability check, run through the same isolated, hard-timeout
+  // forked worker every real archive operation uses (see worker-runner.js) -
+  // a drive that has stopped answering can only ever hang THIS probe, never
+  // the running HTTPS server or a photo already mid-upload. Runs once right
+  // after startup and then on DRIVE_PROBE_INTERVAL_MS, so a drive that was
+  // not yet reconnected (e.g. right after Windows login) is picked up
+  // automatically once it appears - no restart needed.
+  async probeDrive(config) {
+    if (this.probing) return; // never overlap a probe with a still-running one
+    this.probing = true;
+    try {
+      const result = await runInWorker('probe', { root: config.photoRoot, platform: DEV_OPTIONS.platform }, { timeoutMs: DRIVE_PROBE_TIMEOUT_MS });
+      const freeGb = Number.isFinite(result.freeBytes) ? Math.round(result.freeBytes / (1024 ** 3)) : undefined;
+      this.report({ shareOk: true, freeGb, lastError: '' });
+    } catch (err) {
+      this.report({ shareOk: false, lastError: (err && err.message) || 'the archive folder is not reachable' });
+    } finally {
+      this.probing = false;
     }
   }
 
@@ -91,8 +128,7 @@ class Runtime {
         credentials,
         runWorker: runInWorker,
         logger: this.logger,
-        spoolDir: spoolDir(),
-        allowDriveLetter: DEV_OPTIONS.allowDriveLetter
+        spoolDir: spoolDir()
       });
       await this.serverHandle.listen();
     } catch (err) {
@@ -113,6 +149,14 @@ class Runtime {
       failedToday: this.status.get().failedToday || 0
     });
     this.logger.info(`Delivery Photos running: https://${config.hostname}:${config.port}/`);
+
+    // Checked once immediately (requirement: known on startup whether the
+    // archive folder is reachable, e.g. a mapped drive not yet reconnected
+    // after login) and then kept current on an interval for as long as the
+    // worker keeps running - see probeDrive() above.
+    await this.probeDrive(config);
+    this.probeTimer = setInterval(() => this.probeDrive(config), DRIVE_PROBE_INTERVAL_MS);
+    this.probeTimer.unref?.();
   }
 
   async stop() {

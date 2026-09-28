@@ -82,11 +82,14 @@ const assertTempFileName = (name) => assertMatches('temporary file name', name, 
 const assertTestDirName = (name) => assertMatches('test directory', name, TEST_DIR_PATTERN);
 
 // Judges the CONFIGURED photograph root (operator-supplied, so this catches
-// mistakes rather than attacks): it must be an absolute UNC path on Windows,
-// and must be a folder below a share, never the top of the share or a drive.
-// Drive letters are classified separately because a mapped drive letter exists
-// only inside the Windows logon session that created it - a scheduled task or
-// service running as another account cannot see it.
+// mistakes rather than attacks): it must be an absolute path on Windows -
+// either a UNC path or a mapped drive letter - and must be a folder below
+// the share/drive, never its bare top. Drive letters are classified
+// separately from UNC paths (kind: 'drive-letter' vs 'unc') because a mapped
+// drive letter exists only inside the Windows logon session that created it;
+// callers decide whether that is acceptable for how they run (the Delivery
+// Photos worker is always forked from the interactive, logged-in COM Bridge
+// app, so it inherits the same session's drive mappings and accepts both).
 function classifyRoot(root, platform = process.platform) {
   const bad = (reason) => ({ ok: false, kind: 'invalid', reason });
 

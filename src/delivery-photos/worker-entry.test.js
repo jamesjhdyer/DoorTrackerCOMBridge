@@ -16,9 +16,9 @@ const { makeEnv } = require('./helpers');
 
 const ENTRY = nodePath.join(__dirname, 'worker-entry.js');
 
-function spawnWorker(env) {
+function spawnWorker(env, extraEnv = {}) {
   const child = fork(ENTRY, [], {
-    env: { ...process.env, DELIVERY_PHOTOS_HOME: env.home, DELIVERY_PHOTOS_ALLOW_DRIVE_LETTER: '1' },
+    env: { ...process.env, DELIVERY_PHOTOS_HOME: env.home, ...extraEnv },
     stdio: ['ignore', 'pipe', 'pipe', 'ipc']
   });
   const statusEvents = [];
@@ -117,6 +117,50 @@ test('a second worker started against the same home refuses to run alongside the
   } finally {
     first.child.kill('SIGKILL');
     await first.exited;
+    env.cleanup();
+  }
+});
+
+test('once running, the archive folder is probed and reported reachable', async () => {
+  const env = makeEnv();
+  configure(env, { port: 8720 });
+  const worker = spawnWorker(env);
+  try {
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => s.shareOk === true)), worker.output());
+  } finally {
+    worker.child.kill('SIGKILL');
+    await worker.exited;
+    env.cleanup();
+  }
+});
+
+// Simulates the exact scenario a mapped drive presents right after Windows
+// login: the archive folder does not exist yet when the worker starts. It
+// must not crash, must report a clear message naming the drive, and must
+// pick the drive up automatically (no restart, no "reload") once it
+// reconnects - proven here in well under a second by shortening the probe
+// interval via a test-only env var (never set in production; see
+// DRIVE_PROBE_INTERVAL_MS's own comment).
+test('an archive folder that is not reachable yet is reported clearly without crashing, then picked up automatically once it appears', async () => {
+  const env = makeEnv();
+  const notYetMapped = nodePath.join(env.share, 'not-yet-mapped', 'Delivery Photographs');
+  configure(env, { port: 8722, photoRoot: notYetMapped });
+  const worker = spawnWorker(env, { DELIVERY_PHOTOS_PROBE_INTERVAL_MS: '150' });
+  try {
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => s.state === 'running')), worker.output());
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => s.shareOk === false)), worker.output());
+    const unreachable = worker.statusEvents.find((s) => s.shareOk === false);
+    assert.match(unreachable.lastError, /not reachable|does not exist/);
+
+    fs.mkdirSync(notYetMapped, { recursive: true }); // the drive "reconnects"
+
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => s.shareOk === true)), worker.output());
+    const reachable = [...worker.statusEvents].reverse().find((s) => s.shareOk !== undefined);
+    assert.equal(reachable.shareOk, true);
+    assert.equal(reachable.lastError, '');
+  } finally {
+    worker.child.kill('SIGKILL');
+    await worker.exited;
     env.cleanup();
   }
 });

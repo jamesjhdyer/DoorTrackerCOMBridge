@@ -26,9 +26,13 @@ const DEFAULTS = Object.freeze({
 const HOSTNAME_PATTERN = /^[A-Za-z0-9]([A-Za-z0-9-]{0,61}[A-Za-z0-9])?\.local$/;
 
 // Returns { ok: true, config } or { ok: false, errors: [...] } (every
-// problem at once, in plain language). `allowDriveLetter` and `platform`
-// exist for the automated tests and local development only - see
-// classifyRoot in safe-path.js.
+// problem at once, in plain language). `platform` exists for the automated
+// tests and local development only - see classifyRoot in safe-path.js. Both
+// a UNC path and a mapped drive letter (e.g. S:\Delivery Photographs) are
+// accepted: the Delivery Photos worker always runs forked from the
+// interactive, logged-in COM Bridge app, so it sees the same drive mappings
+// as the person who set this up. Whichever form is entered is kept exactly
+// as typed - never converted or guessed from one to the other.
 function validateConfig(raw, options = {}) {
   const errors = [];
   const input = raw && typeof raw === 'object' ? raw : {};
@@ -46,9 +50,6 @@ function validateConfig(raw, options = {}) {
   const photoRoot = normalizeRootInput(String(input.photoRoot || ''));
   const rootInfo = classifyRoot(photoRoot, options.platform);
   if (!rootInfo.ok) errors.push(`The archive folder is not usable: ${rootInfo.reason}`);
-  else if (rootInfo.kind === 'drive-letter' && !options.allowDriveLetter) {
-    errors.push(`The archive folder is a mapped drive letter (${rootInfo.drive}:). Drive letters depend on who is logged in, and this worker may run when nobody is. Use the \\\\server\\share\\... path.`);
-  }
 
   const autoStart = input.autoStart === undefined ? DEFAULTS.autoStart : Boolean(input.autoStart);
 

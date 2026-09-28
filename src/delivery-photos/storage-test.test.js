@@ -7,12 +7,12 @@ const nodePath = require('node:path');
 
 const { testNetworkStorage, StorageTestError } = require('./storage-test');
 const { runInWorker } = require('./worker-runner');
-const { makeEnv, LOCAL_TEST_ROOT_OPTIONS } = require('./helpers');
+const { makeEnv } = require('./helpers');
 
 test('a working folder passes every step and cleans up its own test folder afterwards', async () => {
   const env = makeEnv();
   try {
-    const result = await testNetworkStorage({ root: env.share, ...LOCAL_TEST_ROOT_OPTIONS });
+    const result = await testNetworkStorage({ root: env.share });
     assert.equal(result.ok, true);
     assert.ok(result.steps.every((s) => s.ok));
     assert.ok(result.steps.some((s) => s.label.includes('verified')));
@@ -30,10 +30,7 @@ test('a working folder passes every step and cleans up its own test folder after
 test('a missing folder fails clearly at the "reachable" step, before writing anything', async () => {
   const env = makeEnv();
   try {
-    // Needs the test-only opt-in too, on a real Windows machine - otherwise this
-    // would fail at the earlier "root" (drive-letter) step instead of the
-    // "reachable" (missing folder) step this test actually means to exercise.
-    await assert.rejects(testNetworkStorage({ root: nodePath.join(env.share, 'missing'), ...LOCAL_TEST_ROOT_OPTIONS }), (err) => {
+    await assert.rejects(testNetworkStorage({ root: nodePath.join(env.share, 'missing') }), (err) => {
       assert.ok(err instanceof StorageTestError);
       assert.equal(err.step, 'reachable');
       return true;
@@ -43,17 +40,25 @@ test('a missing folder fails clearly at the "reachable" step, before writing any
   }
 });
 
-test('a drive letter is refused unless explicitly allowed (the same rule as the real archive)', async () => {
+test('a mapped drive letter is accepted by the root/shape check, same as a UNC path', async () => {
   // Forces simulated Windows rules explicitly (platform: 'win32') rather than
-  // relying on whatever OS happens to run this test - this is the one test in
-  // this file that must GENUINELY prove the production rejection, so it does
-  // not use LOCAL_TEST_ROOT_OPTIONS for this half of the assertion.
-  await assert.rejects(testNetworkStorage({ root: 'S:\\Photos', platform: 'win32' }), StorageTestError);
-  // ...and the opt-in (allowDriveLetter: true) is what a real developer/tester
-  // would deliberately pass to accept one anyway - matching config.js and archive.js.
+  // relying on whatever OS happens to run this test. The Delivery Photos
+  // worker always runs forked from the interactive, logged-in COM Bridge
+  // app, so it sees the same drive mappings as whoever set this up - a
+  // drive letter is a legitimate production archive root, not just a UNC
+  // path. It still fails at the "reachable" step here because S:\Photos
+  // does not really exist on whichever machine runs this test, and the
+  // message names the drive it is waiting for.
+  await assert.rejects(testNetworkStorage({ root: 'S:\\Photos', platform: 'win32' }), (err) => {
+    assert.ok(err instanceof StorageTestError);
+    assert.equal(err.step, 'reachable');
+    assert.match(err.message, /Network drive unavailable — waiting for S:/);
+    return true;
+  });
+
   const env = makeEnv();
   try {
-    await assert.doesNotReject(testNetworkStorage({ root: env.share, ...LOCAL_TEST_ROOT_OPTIONS }));
+    await assert.doesNotReject(testNetworkStorage({ root: env.share }));
   } finally {
     env.cleanup();
   }
@@ -63,7 +68,7 @@ test('an existing, unrelated file in the archive folder is left completely alone
   const env = makeEnv();
   try {
     fs.writeFileSync(nodePath.join(env.share, 'do-not-touch.txt'), 'important customer data');
-    await testNetworkStorage({ root: env.share, ...LOCAL_TEST_ROOT_OPTIONS });
+    await testNetworkStorage({ root: env.share });
     assert.equal(fs.readFileSync(nodePath.join(env.share, 'do-not-touch.txt'), 'utf8'), 'important customer data');
   } finally {
     env.cleanup();
@@ -73,7 +78,7 @@ test('an existing, unrelated file in the archive folder is left completely alone
 test('runs correctly through the real forked worker process, exactly as the Electron UI would call it', async () => {
   const env = makeEnv();
   try {
-    const result = await runInWorker('storage-test', { root: env.share, ...LOCAL_TEST_ROOT_OPTIONS }, { timeoutMs: 10000 });
+    const result = await runInWorker('storage-test', { root: env.share }, { timeoutMs: 10000 });
     assert.equal(result.ok, true);
     assert.ok(!fs.readdirSync(env.share).some((name) => name.startsWith('_delivery-photos-test-')));
   } finally {

@@ -115,7 +115,7 @@ async function serveStaticFile(req, res, urlPath) {
 // over-limit upload, never writes to the drive on a checksum mismatch, and
 // the spool file is always removed afterwards, success or failure.
 async function handleUpload(req, res, params, deps) {
-  const { config, runWorker, logger, spoolDir, allowDriveLetter, testMode } = deps;
+  const { config, runWorker, logger, spoolDir, testMode } = deps;
 
   const parsed = parseReference(params.reference);
   if (!parsed.ok) return sendJson(res, 400, { error: 'invalid_reference', message: parsed.reason });
@@ -162,7 +162,7 @@ async function handleUpload(req, res, params, deps) {
 
     const filed = await runWorker(
       'archive',
-      { root: config.photoRoot, reference: parsed.reference, photoId: params.photoId, spoolPath, sizeBytes: bytes.length, sha256: actualSha, allowDriveLetter },
+      { root: config.photoRoot, reference: parsed.reference, photoId: params.photoId, spoolPath, sizeBytes: bytes.length, sha256: actualSha },
       { timeoutMs: config.operationTimeoutSeconds * 1000, testMode }
     );
     logger.info(`Filed ${filed.storagePath} (${filed.sizeBytes} bytes)${filed.adopted ? ' - already on the drive' : ''}.`);
@@ -213,8 +213,8 @@ function router(req, res, deps) {
 }
 
 // Starts both listeners. Returns { httpsServer, httpServer, close() }.
-function startServers({ config, credentials, runWorker, logger, spoolDir, allowDriveLetter, testMode }) {
-  const deps = { config, runWorker, logger, spoolDir, allowDriveLetter, testMode };
+function startServers({ config, credentials, runWorker, logger, spoolDir, testMode }) {
+  const deps = { config, runWorker, logger, spoolDir, testMode };
 
   const httpsServer = https.createServer({ key: credentials.key, cert: credentials.cert }, (req, res) => router(req, res, deps));
 

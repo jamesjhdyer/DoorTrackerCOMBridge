@@ -39,22 +39,25 @@ test('the port must be a sensible whole number', () => {
   assert.equal(validateConfig({ ...good(), port: '9443' }, WIN).config.port, 9443);
 });
 
-test('the archive folder must be a network path; drive letters refused without the test switch', () => {
-  for (const bad of ['', 'S:\\Photos', 'relative\\path', '/etc']) {
+test('the archive folder must be a valid absolute Windows path; relative and unsafe paths are refused', () => {
+  for (const bad of ['', 'relative\\path', '/etc']) {
     assert.equal(validateConfig({ ...good(), photoRoot: bad }, WIN).ok, false, `should refuse ${JSON.stringify(bad)}`);
   }
-  assert.equal(validateConfig({ ...good(), photoRoot: 'S:\\Photos' }, { ...WIN, allowDriveLetter: true }).ok, true);
+  assert.equal(validateConfig({ ...good(), photoRoot: 'S:\\Photos' }, WIN).ok, true, 'a mapped drive letter is a valid production path');
 });
 
 // Every case named explicitly, individually, rather than trusting one example
-// to stand in for the rest - this is the rule that must never weaken: a real
-// delivery archive is never, ever a drive letter, on real Windows, in production.
-test('production Windows path rules exactly: UNC allowed, every drive letter rejected, relative rejected', () => {
+// to stand in for the rest. The Delivery Photos worker always runs forked
+// from the interactive, logged-in COM Bridge app (never a Windows service or
+// a scheduled task under a different account), so it inherits that user's
+// own drive mappings exactly as Explorer does - both a UNC path and a mapped
+// drive letter are legitimate production settings. What must never weaken is
+// the SHAPE check: relative paths are still refused outright.
+test('production Windows path rules exactly: UNC accepted, every drive letter accepted, relative rejected', () => {
   assert.equal(validateConfig({ ...good(), photoRoot: '\\\\SERVER\\Share\\Delivery Photographs' }, WIN).ok, true, 'UNC path must be allowed');
-  for (const drive of ['S:\\Photos', 'Z:\\Photos', 'C:\\Photos', 'D:\\Photos']) {
+  for (const drive of ['S:\\Delivery Photographs', 'Z:\\Photos', 'C:\\Photos', 'D:\\Photos']) {
     const result = validateConfig({ ...good(), photoRoot: drive }, WIN);
-    assert.equal(result.ok, false, `${drive} must be rejected`);
-    assert.ok(result.errors.some((e) => /drive letter/.test(e)), `${drive} must be rejected specifically as a drive letter, not some other reason: ${result.errors}`);
+    assert.equal(result.ok, true, `${drive} must be accepted: ${JSON.stringify(result.errors)}`);
   }
   assert.equal(validateConfig({ ...good(), photoRoot: 'relative\\path\\to\\photos' }, WIN).ok, false, 'a relative path must be rejected');
 });

@@ -9,7 +9,7 @@ const { randomUUID } = require('node:crypto');
 
 const archive = require('./archive');
 const fsOps = require('./fs-ops');
-const { makeEnv, jpeg, LOCAL_TEST_ROOT_OPTIONS } = require('./helpers');
+const { makeEnv, jpeg } = require('./helpers');
 
 async function writeSpool(env, bytes, name = `${randomUUID()}.jpg`) {
   const spoolPath = nodePath.join(env.spool, name);
@@ -18,10 +18,11 @@ async function writeSpool(env, bytes, name = `${randomUUID()}.jpg`) {
   return spoolPath;
 }
 
-// Every test below files onto env.share, a real local temp folder - see
-// LOCAL_TEST_ROOT_OPTIONS's own comment for why that needs the explicit
-// test-only opt-in on a real Windows machine (including GitHub Actions'
-// runners) even though it is a no-op on macOS.
+// Every test below files onto env.share, a real local temp folder. On a real
+// Windows machine (including GitHub Actions' own Windows runners) that makes
+// it a genuine drive-letter path - which the production rule now accepts
+// directly (see the "production Windows path rules" tests below), so no
+// special test-only opt-in is needed here any more.
 function params(env, overrides = {}) {
   const bytes = overrides.bytes || jpeg('archive-test');
   return {
@@ -31,7 +32,6 @@ function params(env, overrides = {}) {
     spoolPath: overrides.spoolPath,
     sizeBytes: bytes.length,
     sha256: fsOps.sha256OfBuffer(bytes),
-    ...LOCAL_TEST_ROOT_OPTIONS,
     ...overrides
   };
 }
@@ -39,46 +39,59 @@ function params(env, overrides = {}) {
 test('probeRoot reports ok and free space for a real folder, and a plain error for a missing one', async () => {
   const env = makeEnv();
   try {
-    const ok = await archive.probeRoot({ root: env.share, ...LOCAL_TEST_ROOT_OPTIONS });
+    const ok = await archive.probeRoot({ root: env.share });
     assert.equal(ok.ok, true);
     assert.ok(typeof ok.freeBytes === 'number' || ok.freeBytes === null);
 
-    // Also needs the test-only opt-in on a real Windows machine - otherwise this
-    // would fail at the drive-letter check instead of the "missing folder" check
-    // this test actually means to exercise.
-    await assert.rejects(archive.probeRoot({ root: nodePath.join(env.share, 'does-not-exist'), ...LOCAL_TEST_ROOT_OPTIONS }), archive.ArchiveError);
+    await assert.rejects(archive.probeRoot({ root: nodePath.join(env.share, 'does-not-exist') }), archive.ArchiveError);
   } finally {
     env.cleanup();
   }
 });
 
-test('probeRoot refuses a root that is not a real folder allow-list (drive letter, relative, etc.)', async () => {
-  await assert.rejects(archive.probeRoot({ root: 'S:\\Photos' }), archive.ArchiveError);
+test('probeRoot refuses a root with an invalid shape (relative path)', async () => {
   await assert.rejects(archive.probeRoot({ root: 'relative/path' }), archive.ArchiveError);
 });
 
-// This is the exact shape of the bug that broke the GitHub Actions Windows
-// build: that runner's own temp/checkout folders live on a D:\ drive, so a
-// real local test folder is a genuine drive-letter path there - simulated
-// here directly (platform: 'win32', a D:\ root, no real directory needed for
-// classification itself) rather than trusted to "just happen to work" only
-// because macOS's own posix-dev rules do not enforce drive-letter rejection
-// at all. Both halves matter: still rejected by default (production must
-// never accept this), and specifically NOT rejected for being a drive letter
-// once explicitly opted in (only failing afterwards because this exact path
-// does not really exist on whichever machine runs this test).
-test('a GitHub-Actions-shaped D:\\ path is rejected by default and accepted only with the explicit test opt-in', async () => {
-  const ciShapedRoot = 'D:\\a\\DoorTrackerCOMBridge\\DoorTrackerCOMBridge\\Temp\\dp-test-abc123\\share';
-
-  await assert.rejects(archive.probeRoot({ root: ciShapedRoot, platform: 'win32' }), (err) => {
+// Every path shape named explicitly, individually, rather than trusting one
+// example to stand in for the rest. The Delivery Photos worker always runs
+// forked from the interactive, logged-in COM Bridge app (never a Windows
+// service or a scheduled task under a different account), so it inherits
+// that same user's own drive mappings exactly as Explorer does - both a UNC
+// path and a mapped drive letter are legitimate production archive roots.
+// What must never weaken is the SHAPE check: relative paths are still
+// refused outright, and only for that reason.
+test('production Windows path rules: UNC and every drive letter are accepted by checkRoot; a relative path is refused', async () => {
+  const unc = '\\\\SERVER\\Share\\Delivery Photographs';
+  await assert.rejects(archive.probeRoot({ root: unc, platform: 'win32' }), (err) => {
     assert.ok(err instanceof archive.ArchiveError);
-    assert.match(err.message, /drive letter/, `must be refused specifically for being a drive letter: ${err.message}`);
+    // Fails only because \\SERVER doesn't really exist on the machine running
+    // this test, never because the UNC shape itself was refused.
+    assert.doesNotMatch(err.message, /is not usable/, `must pass the shape check - got: ${err.message}`);
     return true;
   });
 
-  await assert.rejects(archive.probeRoot({ root: ciShapedRoot, platform: 'win32', allowDriveLetter: true }), (err) => {
+  // This is the exact shape of the bug that once broke the GitHub Actions
+  // Windows build: that runner's own temp/checkout folders live on a D:\
+  // drive, so a real local test folder is a genuine drive-letter path there.
+  const driveLetterRoot = 'D:\\a\\DoorTrackerCOMBridge\\DoorTrackerCOMBridge\\Temp\\dp-test-abc123\\share';
+  await assert.rejects(archive.probeRoot({ root: driveLetterRoot, platform: 'win32' }), (err) => {
     assert.ok(err instanceof archive.ArchiveError);
-    assert.doesNotMatch(err.message, /drive letter/, `must NOT be refused as a drive letter once explicitly allowed - got: ${err.message}`);
+    assert.doesNotMatch(err.message, /is not usable/, `must pass the shape check - got: ${err.message}`);
+    return true;
+  });
+
+  await assert.rejects(archive.probeRoot({ root: 'relative\\path', platform: 'win32' }), (err) => {
+    assert.ok(err instanceof archive.ArchiveError);
+    assert.match(err.message, /is not usable/, `a relative path must still be refused for its shape - got: ${err.message}`);
+    return true;
+  });
+});
+
+test('a mapped drive letter that is not reachable reports a clear, specific message naming the drive', async () => {
+  await assert.rejects(archive.probeRoot({ root: 'S:\\Delivery Photographs', platform: 'win32' }), (err) => {
+    assert.ok(err instanceof archive.ArchiveError);
+    assert.match(err.message, /Network drive unavailable — waiting for S:/, `must name the drive it is waiting for - got: ${err.message}`);
     return true;
   });
 });
@@ -224,7 +237,7 @@ test('sweepIncoming removes only leftover .part files from a previous crash', as
     fs.mkdirSync(incoming, { recursive: true });
     fs.writeFileSync(nodePath.join(incoming, `${randomUUID()}.part`), 'leftover');
     fs.writeFileSync(nodePath.join(incoming, 'not-ours.txt'), 'leave me alone');
-    const result = await archive.sweepIncoming({ root: env.share, ...LOCAL_TEST_ROOT_OPTIONS });
+    const result = await archive.sweepIncoming({ root: env.share });
     assert.equal(result.removed, 1);
     assert.deepEqual(fs.readdirSync(incoming), ['not-ours.txt']);
   } finally {

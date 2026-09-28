@@ -43,11 +43,15 @@ class ArchiveError extends Error {
 // `platform` defaults to classifyRoot's own default (the real process.platform)
 // and exists as an explicit parameter purely so the automated tests can prove
 // these Windows rules from any development machine, exactly like config.js and
-// storage-test.js already do - it is never set by any real caller.
-function checkRoot(root, allowDriveLetter, platform) {
+// storage-test.js already do - it is never set by any real caller. Both a UNC
+// path and a mapped drive letter are accepted here: the Delivery Photos worker
+// is always forked from the interactive, logged-in COM Bridge app, so it
+// inherits that session's own drive mappings exactly as Explorer does. Only
+// the path SHAPE is judged here (see classifyRoot) - never converted or
+// guessed from one form to the other.
+function checkRoot(root, platform) {
   const info = classifyRoot(root, platform);
   if (!info.ok) throw new ArchiveError('BAD_ROOT', `the archive folder is not usable: ${info.reason}`);
-  if (info.kind === 'drive-letter' && !allowDriveLetter) throw new ArchiveError('BAD_ROOT', 'a drive letter cannot be used by the Delivery Photos worker');
 }
 
 // Every filesystem call the worker makes on the configured root goes through
@@ -55,12 +59,22 @@ function checkRoot(root, allowDriveLetter, platform) {
 // unplugged, unmounted, or the account has no permission to it - always comes
 // back as a plain ArchiveError with a stable code, never a raw Node ENOENT/EACCES
 // exception (which would carry a real filesystem path and an unpredictable shape).
-async function requireRoot(root) {
+async function requireRoot(root, platform) {
   let stats;
   try {
     stats = await fs.lstat(root);
   } catch (err) {
-    if (err.code === 'ENOENT') throw new ArchiveError('ROOT_NOT_FOUND', 'the archive folder does not exist, or the network drive is not reachable right now');
+    if (err.code === 'ENOENT') {
+      // A mapped drive letter that has not reconnected yet (e.g. right after
+      // Windows login, before the logon script/GPO remaps it) looks exactly
+      // like "folder does not exist" to Node - named specifically here so the
+      // operator sees which drive to wait for, rather than a generic message.
+      const info = classifyRoot(root, platform);
+      const message = info.ok && info.kind === 'drive-letter'
+        ? `Network drive unavailable — waiting for ${info.drive}:`
+        : 'the archive folder does not exist, or the network drive is not reachable right now';
+      throw new ArchiveError('ROOT_NOT_FOUND', message);
+    }
     if (err.code === 'EACCES' || err.code === 'EPERM') throw new ArchiveError('ROOT_DENIED', 'this account does not have permission to open the archive folder');
     throw new ArchiveError('ROOT_UNREADABLE', `the archive folder could not be checked (${err.code || err.message})`);
   }
@@ -78,9 +92,9 @@ async function ensureDirectory(dirPath) {
 }
 
 // Is the archive folder there, and how much room is left? (Read-only.)
-async function probeRoot({ root, allowDriveLetter = false, platform }) {
-  checkRoot(root, allowDriveLetter, platform);
-  await requireRoot(root);
+async function probeRoot({ root, platform }) {
+  checkRoot(root, platform);
+  await requireRoot(root, platform);
   const space = await fsOps.getFreeSpace(root);
   return { ok: true, freeBytes: space.ok ? space.freeBytes : null };
 }
@@ -98,9 +112,9 @@ async function listPhotoFiles(folder) {
 
 // Files the Bridge wrote and then had to give up on (killed part-way) are removed
 // at the start of the next job. Only names that match our own <uuid>.part pattern are touched.
-async function sweepIncoming({ root, allowDriveLetter = false, platform }) {
-  checkRoot(root, allowDriveLetter, platform);
-  await requireRoot(root);
+async function sweepIncoming({ root, platform }) {
+  checkRoot(root, platform);
+  await requireRoot(root, platform);
   const incoming = resolveInsideRoot(root, [INCOMING_DIR_NAME]);
   try {
     return { removed: (await fsOps.sweepTempFiles(incoming)).length };
@@ -113,7 +127,7 @@ async function sweepIncoming({ root, allowDriveLetter = false, platform }) {
 // Files one photograph (already downloaded to the local spool) into <root>/<REFERENCE>/photo-NNN.jpg.
 // `hooks.afterPublish` exists only so tests can simulate a crash right after the rename.
 async function archivePhoto(params, hooks = {}) {
-  const { root, reference, photoId, spoolPath, sizeBytes, sha256, allowDriveLetter = false, platform } = params;
+  const { root, reference, photoId, spoolPath, sizeBytes, sha256, platform } = params;
 
   if (!UUID.test(String(photoId))) throw new ArchiveError('BAD_INPUT', 'invalid photograph id');
   if (!SHA256.test(String(sha256)) || !Number.isInteger(sizeBytes) || sizeBytes < 1) throw new ArchiveError('BAD_INPUT', 'invalid size or checksum');
@@ -127,8 +141,8 @@ async function archivePhoto(params, hooks = {}) {
     throw new ArchiveError('BAD_REFERENCE', err.message);
   }
 
-  checkRoot(root, allowDriveLetter, platform);
-  await requireRoot(root);
+  checkRoot(root, platform);
+  await requireRoot(root, platform);
 
   const data = await fs.readFile(spoolPath);
   if (data.length !== sizeBytes || fsOps.sha256OfBuffer(data) !== sha256) {
