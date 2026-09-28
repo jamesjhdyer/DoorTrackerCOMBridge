@@ -52,13 +52,16 @@ async function testNetworkStorage({ root, platform } = {}) {
   try {
     stats = await fs.lstat(root);
   } catch (err) {
-    if (err.code === 'ENOENT') {
-      // Same drive-letter-aware wording as archive.js's requireRoot(), so a
-      // person running this check right after logging in (before Windows has
-      // reconnected the drive) sees exactly which letter it is waiting for.
-      const message = rootInfo.kind === 'drive-letter' ? `Network drive unavailable — waiting for ${rootInfo.drive}:` : 'The archive folder does not exist, or the network drive is not reachable right now.';
-      throw new StorageTestError('reachable', message);
+    // Same drive-letter-aware wording as archive.js's requireRoot(): checked
+    // directly (is the bare drive itself reachable?) rather than guessed
+    // from the error code, so a drive that IS connected but whose folder is
+    // missing (a typo in Setup, say) is not wrongly blamed on the drive.
+    if (rootInfo.kind === 'drive-letter') {
+      const driveOk = await fsOps.driveRootReachable(rootInfo.drive);
+      if (!driveOk) throw new StorageTestError('reachable', `Network drive unavailable — waiting for ${rootInfo.drive}:`);
+      throw new StorageTestError('reachable', `The ${rootInfo.drive}: drive is connected, but the configured folder does not exist on it.`);
     }
+    if (err.code === 'ENOENT') throw new StorageTestError('reachable', 'The archive folder does not exist, or the network drive is not reachable right now.');
     throw new StorageTestError('reachable', `Could not open the archive folder (${err.code || err.message}).`);
   }
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new StorageTestError('reachable', 'The archive folder is not a plain folder.');

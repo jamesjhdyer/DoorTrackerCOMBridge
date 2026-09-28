@@ -64,18 +64,25 @@ async function requireRoot(root, platform) {
   try {
     stats = await fs.lstat(root);
   } catch (err) {
-    if (err.code === 'ENOENT') {
-      // A mapped drive letter that has not reconnected yet (e.g. right after
-      // Windows login, before the logon script/GPO remaps it) looks exactly
-      // like "folder does not exist" to Node - named specifically here so the
-      // operator sees which drive to wait for, rather than a generic message.
-      const info = classifyRoot(root, platform);
-      const message = info.ok && info.kind === 'drive-letter'
-        ? `Network drive unavailable — waiting for ${info.drive}:`
-        : 'the archive folder does not exist, or the network drive is not reachable right now';
-      throw new ArchiveError('ROOT_NOT_FOUND', message);
-    }
     if (err.code === 'EACCES' || err.code === 'EPERM') throw new ArchiveError('ROOT_DENIED', 'this account does not have permission to open the archive folder');
+
+    // A mapped drive letter that is not currently connected (e.g. right
+    // after Windows login, before the logon script/GPO remaps it) can fail
+    // here with any of several OS error codes depending on exactly why the
+    // letter is not there - not reliably ENOENT alone. Checked directly
+    // (is the bare drive itself reachable?) rather than guessed from the
+    // error code, and only reported as "waiting for the drive" when the
+    // drive really is the problem - a drive that IS connected but whose
+    // configured sub-folder is missing (a typo in Setup, say) gets its own,
+    // different message instead of wrongly blaming the drive.
+    const info = classifyRoot(root, platform);
+    if (info.ok && info.kind === 'drive-letter') {
+      const driveOk = await fsOps.driveRootReachable(info.drive);
+      if (!driveOk) throw new ArchiveError('ROOT_NOT_FOUND', `Network drive unavailable — waiting for ${info.drive}:`);
+      throw new ArchiveError('ROOT_NOT_FOUND', `the ${info.drive}: drive is connected, but the configured folder does not exist on it`);
+    }
+
+    if (err.code === 'ENOENT') throw new ArchiveError('ROOT_NOT_FOUND', 'the archive folder does not exist, or the network drive is not reachable right now');
     throw new ArchiveError('ROOT_UNREADABLE', `the archive folder could not be checked (${err.code || err.message})`);
   }
   if (!stats.isDirectory() || stats.isSymbolicLink()) throw new ArchiveError('BAD_ROOT', 'the archive folder is not a plain folder');

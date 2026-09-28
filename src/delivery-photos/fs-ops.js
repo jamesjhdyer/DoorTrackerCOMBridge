@@ -173,6 +173,19 @@ async function sweepTempFiles(tempDir) {
   return removed;
 }
 
+// Whether the drive letter itself is currently mapped/connected, independent
+// of whether the configured sub-folder underneath it exists - lets a caller
+// tell "the drive has not reconnected yet" apart from "the drive is fine but
+// this particular folder is missing", which need very different messages.
+async function driveRootReachable(drive) {
+  try {
+    await fs.lstat(`${drive}:\\`);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
 // Free space as seen by the account running the program (quotas included).
 // fs.statfs needs Node 18.15+, and not every share answers it, so "unknown" is
 // a normal, reported outcome - never a silent pass.
@@ -204,5 +217,6 @@ module.exports = {
   publishNewFile,
   verifyFile,
   sweepTempFiles,
+  driveRootReachable,
   getFreeSpace
 };
