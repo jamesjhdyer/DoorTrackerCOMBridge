@@ -43,9 +43,9 @@ const CONTENT_TYPES = {
 // connection cannot safely be reused for a next request in that case (the
 // unread remainder of this request's body would be misread as the start of
 // the next one), so it is explicitly closed rather than left keep-alive.
-function sendJson(res, status, body, { closeAfter = false } = {}) {
+function sendJson(res, status, body, { closeAfter = false, headers: extraHeaders } = {}) {
   const text = JSON.stringify(body);
-  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(text), 'Cache-Control': 'no-store' };
+  const headers = { 'Content-Type': 'application/json; charset=utf-8', 'Content-Length': Buffer.byteLength(text), 'Cache-Control': 'no-store', ...extraHeaders };
   if (closeAfter) headers.Connection = 'close';
   res.writeHead(status, headers);
   res.end(text);
@@ -54,6 +54,26 @@ function sendJson(res, status, body, { closeAfter = false } = {}) {
 
 function sha256Hex(buffer) {
   return createHash('sha256').update(buffer).digest('hex');
+}
+
+// The LAN address of whoever made this request - for logging/audit only,
+// never for an access decision (that is entirely the pairing token's job;
+// an IP on a shared/NAT'd network is not a reliable identity). Strips the
+// IPv4-mapped IPv6 prefix Node reports for an IPv4 peer (`::ffff:10.0.0.5`)
+// so log lines read as a plain, familiar LAN address.
+function clientIp(req) {
+  const raw = req.socket && req.socket.remoteAddress;
+  if (!raw) return 'unknown';
+  return raw.startsWith('::ffff:') ? raw.slice(7) : raw;
+}
+
+// `Authorization: Bearer <token>` only - never a query string or URL
+// segment, so the token can never end up in a server access log, browser
+// history, or a bookmarked link.
+function bearerToken(req) {
+  const header = String(req.headers.authorization || '');
+  const match = /^Bearer (.+)$/.exec(header);
+  return match ? match[1].trim() : '';
 }
 
 // Reads the request body up to `maxBytes`. Rejects (without buffering
@@ -107,15 +127,23 @@ async function serveStaticFile(req, res, urlPath) {
   }
 }
 
-// One photograph, start to finish: validate the reference and the id, check
-// the declared size/checksum headers are well-formed, read the body (capped),
+// One photograph, start to finish: check pairing, check the server isn't
+// already at capacity, validate the reference and the id, check the
+// declared size/checksum headers are well-formed, read the body (capped),
 // verify what actually arrived matches what was declared, spool it to a local
 // temp file, hand it to the archive worker, and answer only once the file has
 // genuinely been read back off the drive and matched. Never buffers an
 // over-limit upload, never writes to the drive on a checksum mismatch, and
 // the spool file is always removed afterwards, success or failure.
 async function handleUpload(req, res, params, deps) {
-  const { config, runWorker, logger, spoolDir, testMode } = deps;
+  const { config, runWorker, logger, spoolDir, testMode, pairing, limiter } = deps;
+  const ip = clientIp(req);
+
+  const auth = pairing.verify(bearerToken(req));
+  if (!auth.ok) {
+    logger.warn(`Rejected an upload from ${ip}: not a paired device.`);
+    return sendJson(res, 401, { error: 'unauthorized', message: 'This device is not paired. Open the Delivery Photos page on this iPad and pair it again.', retryable: false }, { closeAfter: true });
+  }
 
   const parsed = parseReference(params.reference);
   if (!parsed.ok) return sendJson(res, 400, { error: 'invalid_reference', message: parsed.reason });
@@ -138,43 +166,103 @@ async function handleUpload(req, res, params, deps) {
     return sendJson(res, 413, { error: 'too_large', message: `Photograph is larger than the ${Math.round(config.maxPhotoBytes / 1000000)} MB limit.` }, { closeAfter: true });
   }
 
-  let bytes;
-  try {
-    bytes = await readBody(req, config.maxPhotoBytes);
-  } catch (err) {
-    return sendJson(res, err.code === 'too_large' ? 413 : 400, { error: err.code || 'bad_body', message: err.message });
+  // Capacity is reserved HERE, before the (potentially large) body is even
+  // read - an over-limit request is rejected immediately rather than first
+  // being allowed to buffer its body for nothing. Reference/id/header shape
+  // are deliberately checked above this line instead of below it: a
+  // malformed request should never cost a concurrency slot at all.
+  const slot = await limiter.acquire();
+  if (!slot.ok) {
+    logger.warn(`Rejected an upload for ${parsed.reference} from ${ip}: server busy (${slot.reason}).`);
+    return sendJson(res, 429, { error: 'busy', message: 'The Delivery Photos service is busy right now - please wait a few seconds and retry.', retryable: true }, { closeAfter: true, headers: { 'Retry-After': '3' } });
   }
-  if (bytes.length < 100) return sendJson(res, 400, { error: 'too_small', message: 'That does not look like a real photograph.' });
-  if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return sendJson(res, 400, { error: 'not_a_jpeg', message: 'That does not look like a JPEG file (wrong signature).' });
 
-  const actualSha = sha256Hex(bytes);
-  if (actualSha !== declaredSha) return sendJson(res, 409, { error: 'checksum_mismatch', message: 'What arrived does not match the checksum the iPad declared - please retry.' });
-
-  await fsp.mkdir(spoolDir, { recursive: true });
-  const spoolPath = nodePath.join(spoolDir, `${params.photoId}.jpg`);
-  // Cleanup is awaited BEFORE the response is sent (not in a finally block
-  // racing against res.end() below) so a caller can rely on: by the time the
-  // response arrives, the spool is already clean - never a window where the
-  // client has moved on but a temp file is still briefly on disk.
-  let outcome;
   try {
-    await fsp.writeFile(spoolPath, bytes);
+    let bytes;
+    try {
+      bytes = await readBody(req, config.maxPhotoBytes);
+    } catch (err) {
+      return sendJson(res, err.code === 'too_large' ? 413 : 400, { error: err.code || 'bad_body', message: err.message });
+    }
+    if (bytes.length < 100) return sendJson(res, 400, { error: 'too_small', message: 'That does not look like a real photograph.' });
+    if (bytes[0] !== 0xff || bytes[1] !== 0xd8) return sendJson(res, 400, { error: 'not_a_jpeg', message: 'That does not look like a JPEG file (wrong signature).' });
 
-    const filed = await runWorker(
-      'archive',
-      { root: config.photoRoot, reference: parsed.reference, photoId: params.photoId, spoolPath, sizeBytes: bytes.length, sha256: actualSha },
-      { timeoutMs: config.operationTimeoutSeconds * 1000, testMode }
-    );
-    logger.info(`Filed ${filed.storagePath} (${filed.sizeBytes} bytes)${filed.adopted ? ' - already on the drive' : ''}.`);
-    outcome = { status: 201, body: { ok: true, storagePath: filed.storagePath, sizeBytes: filed.sizeBytes, sha256: filed.sha256 } };
-  } catch (err) {
-    const message = (err && err.message) || String(err);
-    logger.error(`Could not file ${params.photoId} for ${parsed.reference}: ${message}`);
-    outcome = { status: 502, body: { error: 'archive_failed', message: 'The network drive could not be reached or the write could not be verified - please retry.', retryable: true } };
+    const actualSha = sha256Hex(bytes);
+    if (actualSha !== declaredSha) return sendJson(res, 409, { error: 'checksum_mismatch', message: 'What arrived does not match the checksum the iPad declared - please retry.' });
+
+    await fsp.mkdir(spoolDir, { recursive: true });
+    const spoolPath = nodePath.join(spoolDir, `${params.photoId}.jpg`);
+    // Cleanup is awaited BEFORE the response is sent (not in a finally block
+    // racing against res.end() below) so a caller can rely on: by the time the
+    // response arrives, the spool is already clean - never a window where the
+    // client has moved on but a temp file is still briefly on disk.
+    let outcome;
+    try {
+      await fsp.writeFile(spoolPath, bytes);
+
+      const filed = await runWorker(
+        'archive',
+        { root: config.photoRoot, reference: parsed.reference, photoId: params.photoId, spoolPath, sizeBytes: bytes.length, sha256: actualSha, minFreeGb: config.minFreeGb },
+        { timeoutMs: config.operationTimeoutSeconds * 1000, testMode }
+      );
+      logger.info(`Filed ${filed.storagePath} (${filed.sizeBytes} bytes)${filed.adopted ? ' - already on the drive' : ''}, from ${ip}.`);
+      outcome = { status: 201, body: { ok: true, storagePath: filed.storagePath, sizeBytes: filed.sizeBytes, sha256: filed.sha256 } };
+    } catch (err) {
+      const message = (err && err.message) || String(err);
+      logger.error(`Could not file ${params.photoId} for ${parsed.reference} from ${ip}: ${message}`);
+      if (err && err.code === 'INSUFFICIENT_SPACE') {
+        outcome = { status: 507, body: { error: 'insufficient_storage', message: 'There is not enough free space on the archive drive right now. Please tell the office and try again later.', retryable: true } };
+      } else {
+        outcome = { status: 502, body: { error: 'archive_failed', message: 'The network drive could not be reached or the write could not be verified - please retry.', retryable: true } };
+      }
+    } finally {
+      await fsp.rm(spoolPath, { force: true }).catch(() => {});
+    }
+    return sendJson(res, outcome.status, outcome.body);
   } finally {
-    await fsp.rm(spoolPath, { force: true }).catch(() => {});
+    slot.release();
   }
-  return sendJson(res, outcome.status, outcome.body);
+}
+
+// POST /api/pair { code } -> { token, deviceId }. No auth required - this
+// IS the auth bootstrap - but gated by the pairing code's own short expiry,
+// single-use, and attempt limit (see auth.js). Never logs the code or the
+// issued token, only the plain outcome and the requester's IP.
+async function handlePair(req, res, deps) {
+  const { pairing, logger } = deps;
+  const ip = clientIp(req);
+
+  let body;
+  try {
+    const raw = await readBody(req, 1000);
+    body = JSON.parse(raw.toString('utf8') || '{}');
+  } catch {
+    return sendJson(res, 400, { error: 'bad_body', message: 'Malformed pairing request.' }, { closeAfter: true });
+  }
+
+  const result = pairing.pair(body && body.code);
+  if (!result.ok) {
+    const messages = {
+      no_active_code: 'No pairing code is currently active. Generate one on the PC first.',
+      expired: 'That pairing code has expired. Generate a new one on the PC.',
+      too_many_attempts: 'Too many wrong attempts. Generate a new pairing code on the PC.',
+      wrong_code: 'That code was not recognised. Check it and try again.'
+    };
+    logger.warn(`Pairing attempt from ${ip} failed: ${result.reason}.`);
+    return sendJson(res, 401, { error: result.reason, message: messages[result.reason] || 'Could not pair this device.' }, { closeAfter: true });
+  }
+
+  logger.info(`A new device paired from ${ip}.`);
+  return sendJson(res, 200, { ok: true, token: result.token, deviceId: result.deviceId });
+}
+
+// GET /api/pair/check - lets the iPad app find out, on load, whether its
+// already-stored token is still good (e.g. not revoked since last time)
+// without needing to attempt a real photo upload just to find out.
+function handlePairCheck(req, res, deps) {
+  const { pairing } = deps;
+  const auth = pairing.verify(bearerToken(req));
+  return sendJson(res, 200, { paired: auth.ok });
 }
 
 function router(req, res, deps) {
@@ -187,6 +275,18 @@ function router(req, res, deps) {
       if (!res.headersSent) sendJson(res, 500, { error: 'internal', message: 'Something went wrong. Please retry.', retryable: true });
     });
     return;
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/pair') {
+    handlePair(req, res, deps).catch((err) => {
+      deps.logger.error(`Unexpected error handling a pairing request: ${err && err.message}`);
+      if (!res.headersSent) sendJson(res, 500, { error: 'internal', message: 'Something went wrong. Please retry.' });
+    });
+    return;
+  }
+
+  if (req.method === 'GET' && url.pathname === '/api/pair/check') {
+    return handlePairCheck(req, res, deps);
   }
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -213,10 +313,21 @@ function router(req, res, deps) {
 }
 
 // Starts both listeners. Returns { httpsServer, httpServer, close() }.
-function startServers({ config, credentials, runWorker, logger, spoolDir, testMode }) {
-  const deps = { config, runWorker, logger, spoolDir, testMode };
+// `pairing` (auth.js's PairingManager) and `limiter` (concurrency.js's
+// ConcurrencyLimiter) are created once per worker instance by the caller
+// (worker-entry.js) and passed in here, same as `runWorker` already is.
+function startServers({ config, credentials, runWorker, logger, spoolDir, testMode, pairing, limiter }) {
+  const deps = { config, runWorker, logger, spoolDir, testMode, pairing, limiter };
 
   const httpsServer = https.createServer({ key: credentials.key, cert: credentials.cert }, (req, res) => router(req, res, deps));
+  // Explicit, intentionally generous-but-bounded request timeouts (Node's
+  // own defaults are not this explicit) - a slow or stalled connection can
+  // only ever hold its one concurrency slot for this long, never forever.
+  // The photo upload itself has no server-side artificial delay; a real
+  // photograph over the workshop's own Wi-Fi finishes in a small fraction
+  // of this. Does not change any port, address, or TLS behaviour.
+  httpsServer.headersTimeout = 20000;
+  httpsServer.requestTimeout = 60000;
 
   // The plain-HTTP bootstrap listener answers exactly one useful path - the
   // trust profile - and politely redirects everything else to the real
@@ -237,6 +348,8 @@ function startServers({ config, credentials, runWorker, logger, spoolDir, testMo
     res.writeHead(302, { Location: `https://${config.hostname}:${config.port}/` });
     res.end();
   });
+  httpServer.headersTimeout = 10000;
+  httpServer.requestTimeout = 20000;
 
   return {
     httpsServer,

@@ -9,8 +9,22 @@
 </head>
 <body>
 
+<!-- ============================ PAIRING ============================ -->
+<section id="pairing-screen" class="screen" hidden>
+  <h1 class="brand">DELIVERY PHOTOS</h1>
+  <p class="scan-instruction">This iPad needs to be paired with the PC once before it can upload photos.</p>
+
+  <form id="pairing-form" class="manual-entry-form">
+    <label for="pairing-code-input">Pairing code, from the PC</label>
+    <input id="pairing-code-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" placeholder="Code shown on the PC" />
+    <button type="submit" class="primary-button">Pair this iPad</button>
+  </form>
+  <p id="pairing-error" class="warning" hidden></p>
+  <p id="pairing-busy" class="scan-instruction" hidden>Pairing…</p>
+</section>
+
 <!-- ============================= SCAN ============================= -->
-<section id="scan-screen" class="screen">
+<section id="scan-screen" class="screen" hidden>
   <h1 class="brand">DELIVERY PHOTOS</h1>
   <p class="scan-instruction" id="scan-message">Point the camera at the delivery note code.</p>
 

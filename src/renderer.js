@@ -896,6 +896,7 @@ const dp = {
   address: document.getElementById('dp-address'),
   copyAddressBtn: document.getElementById('dp-copy-address-btn'),
   photoRoot: document.getElementById('dp-photo-root'),
+  pairedCount: document.getElementById('dp-paired-count'),
   filedToday: document.getElementById('dp-filed-today'),
   failedToday: document.getElementById('dp-failed-today'),
   lastError: document.getElementById('dp-last-error'),
@@ -905,6 +906,9 @@ const dp = {
   openFolderBtn: document.getElementById('dp-open-folder-btn'),
   openLogsBtn: document.getElementById('dp-open-logs-btn'),
   testResult: document.getElementById('dp-test-result'),
+  pairBtn: document.getElementById('dp-pair-btn'),
+  revokeBtn: document.getElementById('dp-revoke-btn'),
+  pairingResult: document.getElementById('dp-pairing-result'),
   hostnameInput: document.getElementById('dp-hostname-input'),
   portInput: document.getElementById('dp-port-input'),
   rootInput: document.getElementById('dp-root-input'),
@@ -931,6 +935,7 @@ function renderDeliveryPhotosStatus(status) {
     dp.address.textContent = '-';
     dp.copyAddressBtn.disabled = true;
     dp.photoRoot.textContent = '-';
+    dp.pairedCount.textContent = status && status.pairedDevices ? status.pairedDevices : 0;
     dp.lastError.textContent = (status && status.lastError) || '-';
     return;
   }
@@ -943,6 +948,7 @@ function renderDeliveryPhotosStatus(status) {
   dp.address.textContent = running && status.hostname ? `https://${status.hostname}:${status.port}/` : '-';
   dp.copyAddressBtn.disabled = !(running && status.hostname);
   dp.photoRoot.textContent = status.photoRoot || '-';
+  dp.pairedCount.textContent = status.pairedDevices || 0;
   dp.filedToday.textContent = status.filedToday || 0;
   dp.failedToday.textContent = status.failedToday || 0;
   dp.lastError.textContent = status.lastError || '-';
@@ -983,6 +989,35 @@ dp.testStorageBtn.addEventListener('click', async () => {
     }
   } finally {
     dp.testStorageBtn.disabled = false;
+  }
+});
+
+dp.pairBtn.addEventListener('click', async () => {
+  dp.pairBtn.disabled = true;
+  dp.pairingResult.hidden = false;
+  dp.pairingResult.textContent = 'Generating a pairing code…';
+  try {
+    const result = await window.deliveryPhotos.generatePairingCode();
+    if (!result.ok) {
+      dp.pairingResult.textContent = `[FAIL] ${result.error}`;
+      return;
+    }
+    const minutesLeft = Math.round((result.expiresAt - Date.now()) / 60000);
+    dp.pairingResult.textContent = `Pairing code: ${result.code}\n\nOn the iPad: open the Delivery Photos page, choose "Pair this iPad", and type this code in. Valid for about ${minutesLeft} minutes, and for one iPad only - generate a new code for each additional iPad.`;
+  } finally {
+    dp.pairBtn.disabled = false;
+  }
+});
+
+dp.revokeBtn.addEventListener('click', async () => {
+  if (!confirm('Un-pair every iPad? Each one will need to be paired again with a new code before it can upload photos.')) return;
+  dp.revokeBtn.disabled = true;
+  try {
+    const result = await window.deliveryPhotos.revokeDevices();
+    dp.pairingResult.hidden = false;
+    dp.pairingResult.textContent = result.ok ? 'All devices un-paired. Each iPad will need a new pairing code.' : `[FAIL] ${result.error}`;
+  } finally {
+    dp.revokeBtn.disabled = false;
   }
 });
 

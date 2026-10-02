@@ -61,7 +61,8 @@ const deliveryPhotos = {
   child: null,
   status: null, // the latest status.json contents this worker reported, or null before it has said anything
   stoppedDeliberately: false,
-  restartTimer: null
+  restartTimer: null,
+  pendingRequests: new Map() // requestId -> { resolve, timer } - see sendWorkerRequest()
 };
 
 function sendDeliveryPhotosStatus() {
@@ -99,9 +100,20 @@ function startDeliveryPhotosWorker() {
   deliveryPhotos.child = child;
 
   child.on('message', (message) => {
-    if (message && message.event === 'status') {
+    if (!message || typeof message !== 'object') return;
+    if (message.event === 'status') {
       deliveryPhotos.status = message.status;
       sendDeliveryPhotosStatus();
+      return;
+    }
+    // Reply to a one-off generate-pairing-code/revoke-devices request (see
+    // sendWorkerRequest() below) - matched by requestId, since the worker's
+    // own status events share this same message channel.
+    if (message.requestId && deliveryPhotos.pendingRequests.has(message.requestId)) {
+      const pending = deliveryPhotos.pendingRequests.get(message.requestId);
+      deliveryPhotos.pendingRequests.delete(message.requestId);
+      clearTimeout(pending.timer);
+      pending.resolve(message);
     }
   });
 
@@ -130,6 +142,23 @@ function stopDeliveryPhotosWorker() {
 function reloadDeliveryPhotosWorker() {
   if (deliveryPhotos.child) deliveryPhotos.child.send({ cmd: 'reload' });
   else startDeliveryPhotosWorker();
+}
+
+// Sends a command to the worker and waits for its one matching reply,
+// correlated by requestId - used only by the two pairing-management actions
+// below, which (unlike reload/stop) need an actual answer back for the UI.
+function sendWorkerRequest(cmd, timeoutMs = 5000) {
+  if (!deliveryPhotos.child) return Promise.resolve({ ok: false, error: 'The Delivery Photos service is not running. Start it first.' });
+
+  const requestId = randomUUID();
+  return new Promise((resolve) => {
+    const timer = setTimeout(() => {
+      deliveryPhotos.pendingRequests.delete(requestId);
+      resolve({ ok: false, error: 'The Delivery Photos service did not answer in time.' });
+    }, timeoutMs);
+    deliveryPhotos.pendingRequests.set(requestId, { resolve: (message) => resolve({ ok: true, ...message }), timer });
+    deliveryPhotos.child.send({ cmd, requestId });
+  });
 }
 
 function createWindow() {
@@ -666,6 +695,22 @@ ipcMain.handle('save-delivery-photos-config', async (event, raw) => {
 ipcMain.handle('start-delivery-photos-service', async () => {
   startDeliveryPhotosWorker();
   return { ok: true };
+});
+
+// "Pair a new iPad": a short, one-time code the operator reads off this
+// screen and types into the iPad - see auth.js/http-server.js's /api/pair.
+// Never touches settings, certificates, or the running servers.
+ipcMain.handle('generate-delivery-photos-pairing-code', async () => {
+  const result = await sendWorkerRequest('generate-pairing-code');
+  return result.ok ? { ok: true, code: result.code, expiresAt: result.expiresAt } : { ok: false, error: result.error };
+});
+
+// "Reset pairing": every previously paired iPad must pair again. A
+// deliberate, all-or-nothing action - confirmed in the renderer before this
+// is ever called.
+ipcMain.handle('revoke-delivery-photos-devices', async () => {
+  const result = await sendWorkerRequest('revoke-devices');
+  return result.ok ? { ok: true } : { ok: false, error: result.error };
 });
 
 ipcMain.handle('stop-delivery-photos-service', async () => {

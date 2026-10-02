@@ -27,6 +27,9 @@ const lockPath = () => nodePath.join(stateDir(), 'worker.lock');
 const spoolDir = () => nodePath.join(homeDir(), 'spool');
 const logsDirPath = () => nodePath.join(homeDir(), 'logs');
 const certsDir = () => nodePath.join(homeDir(), 'certs');
+// Paired iPads: only a per-device id and a SHA-256 HASH of its token ever
+// lands here - see auth.js. Never the token itself, never a pairing code.
+const devicesPath = () => nodePath.join(stateDir(), 'paired-devices.json');
 
 // Creates the logs folder (this program's OWN folder, never the network
 // share) and returns where it actually ended up. If that folder is
@@ -45,4 +48,4 @@ function ensureLogsDir() {
   }
 }
 
-module.exports = { homeDir, configPath, stateDir, statusPath, lockPath, spoolDir, logsDirPath, certsDir, ensureLogsDir };
+module.exports = { homeDir, configPath, stateDir, statusPath, lockPath, spoolDir, logsDirPath, certsDir, devicesPath, ensureLogsDir };

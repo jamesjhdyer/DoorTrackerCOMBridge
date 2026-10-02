@@ -20,11 +20,13 @@ const { loadConfig } = require('./config');
 const { createLogger } = require('./logger');
 const { createStatusFile } = require('./status');
 const { acquireLock } = require('./lock');
-const { ensureLogsDir, statusPath, lockPath, spoolDir, certsDir } = require('./paths');
+const { ensureLogsDir, statusPath, lockPath, spoolDir, certsDir, devicesPath } = require('./paths');
 const { ensureCertificates } = require('./certs');
 const { advertise } = require('./mdns');
 const { startServers } = require('./http-server');
 const { runInWorker } = require('./worker-runner');
+const { PairingManager } = require('./auth');
+const { ConcurrencyLimiter } = require('./concurrency');
 
 const DEV_OPTIONS = {
   platform: process.env.DELIVERY_PHOTOS_PLATFORM || undefined // test-only: exercise Windows path rules on any OS
@@ -51,6 +53,12 @@ class Runtime {
     this.probeTimer = null;
     this.probing = false;
     this.stopped = false;
+    // Live for the whole process, not recreated on every reload(): paired
+    // devices are already persisted to disk (see auth.js) and reload() must
+    // never un-pair every iPad just because a setting changed, and a
+    // pairing code in progress on screen must survive an unrelated reload.
+    this.pairing = new PairingManager({ devicesPath: devicesPath() });
+    this.limiter = new ConcurrencyLimiter();
   }
 
   report(patch) {
@@ -128,7 +136,9 @@ class Runtime {
         credentials,
         runWorker: runInWorker,
         logger: this.logger,
-        spoolDir: spoolDir()
+        spoolDir: spoolDir(),
+        pairing: this.pairing,
+        limiter: this.limiter
       });
       await this.serverHandle.listen();
     } catch (err) {
@@ -146,7 +156,8 @@ class Runtime {
       startedAt: new Date().toISOString(),
       lastError: '',
       filedToday: this.status.get().filedToday || 0,
-      failedToday: this.status.get().failedToday || 0
+      failedToday: this.status.get().failedToday || 0,
+      pairedDevices: this.pairing.pairedCount()
     });
     this.logger.info(`Delivery Photos running: https://${config.hostname}:${config.port}/`);
 
@@ -164,6 +175,20 @@ class Runtime {
     await this.stopServers();
     this.report({ state: 'stopped' });
     if (this.lock) this.lock.release();
+  }
+
+  // The two pairing-management actions the Electron UI's "Pair a new iPad"
+  // and "Reset pairing" buttons drive (see main.js) - neither touches the
+  // running servers, settings, or network/certificate setup at all, only
+  // the pairing state kept in this.pairing (see auth.js).
+  generatePairingCode() {
+    const { code, expiresAt } = this.pairing.generateCode();
+    return { code, expiresAt };
+  }
+
+  revokeDevices() {
+    this.pairing.revokeAll();
+    this.report({ pairedDevices: 0 });
   }
 }
 
@@ -192,6 +217,13 @@ async function main() {
     if (!message || typeof message !== 'object') return;
     if (message.cmd === 'reload') runtime.reload().catch(fatal('Could not apply settings'));
     else if (message.cmd === 'stop') runtime.stop().then(() => process.exit(0));
+    else if (message.cmd === 'generate-pairing-code') {
+      const { code, expiresAt } = runtime.generatePairingCode();
+      if (process.send) process.send({ event: 'pairing-code', requestId: message.requestId, code, expiresAt });
+    } else if (message.cmd === 'revoke-devices') {
+      runtime.revokeDevices();
+      if (process.send) process.send({ event: 'devices-revoked', requestId: message.requestId });
+    }
   });
   process.on('SIGTERM', () => runtime.stop().then(() => process.exit(0)));
 

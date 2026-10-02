@@ -15,6 +15,8 @@ const { startServers } = require('./http-server');
 const { ensureCertificates } = require('./certs');
 const { runInWorker } = require('./worker-runner');
 const { makeEnv, jpeg, quietLogger } = require('./helpers');
+const { PairingManager } = require('./auth');
+const { ConcurrencyLimiter } = require('./concurrency');
 
 process.env.DELIVERY_PHOTOS_TEST_HOOKS = '1';
 const sha256 = (buffer) => createHash('sha256').update(buffer).digest('hex');
@@ -32,20 +34,30 @@ function reservePortPair() {
   return port;
 }
 
+// A single already-paired device's token, handed to `fn` as `token` - every
+// test in this file except the dedicated auth tests below is exercising
+// something OTHER than pairing itself, so it needs a working, pre-paired
+// token to get past the auth gate and reach the behaviour it actually means
+// to test. `pairing`/`limiter` are also handed back so the auth/concurrency
+// tests can drive them directly (revoke a device, exhaust the concurrency
+// limit) without reaching into http-server.js's internals.
 async function withServer(env, overrides, fn) {
-  const config = { hostname: 'localhost', port: reservePortPair(), photoRoot: env.share, maxPhotoBytes: 5 * 1000 * 1000, operationTimeoutSeconds: 10, ...overrides.config };
+  const config = { hostname: 'localhost', port: reservePortPair(), photoRoot: env.share, maxPhotoBytes: 5 * 1000 * 1000, operationTimeoutSeconds: 10, minFreeGb: 0, ...overrides.config };
   const credentials = ensureCertificates(nodePath.join(env.home, 'certs'), config.hostname);
   const logger = overrides.logger || quietLogger();
+  const pairing = overrides.pairing || new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
+  const limiter = overrides.limiter || new ConcurrencyLimiter();
+  const { token } = pairing.pair(pairing.generateCode().code);
   // photoRoot is env.share, a real local temp folder - on a real Windows
   // machine (including GitHub Actions' own runners) that is a genuine
   // drive-letter path, which production now accepts directly (see
   // archive.test.js/config.test.js/storage-test.test.js for the path-shape
   // rules themselves), so no test-only opt-in is needed here.
-  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, testMode: overrides.testMode });
+  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, testMode: overrides.testMode, pairing, limiter });
   await handle.listen();
   const agent = new https.Agent({ ca: credentials.caCert });
   try {
-    await fn({ config, agent, logger, handle });
+    await fn({ config, agent, logger, handle, token, pairing, limiter });
   } finally {
     await handle.close();
     agent.destroy();
@@ -92,7 +104,7 @@ function plainRequest({ path, port }) {
 test('serves the static iPad web app over real, trusted HTTPS', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const res = await request(agent, { method: 'GET', path: '/', port: config.port });
       assert.equal(res.status, 200);
       assert.match(res.headers['content-type'], /text\/html/);
@@ -106,7 +118,7 @@ test('serves the static iPad web app over real, trusted HTTPS', async () => {
 test('serves the ONE shared reference.js from its canonical server location, not a copy', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const res = await request(agent, { method: 'GET', path: '/reference.js', port: config.port });
       assert.equal(res.status, 200);
       assert.match(res.headers['content-type'], /javascript/);
@@ -135,7 +147,7 @@ test('refuses a client that does not trust the certificate at all', async () => 
 test('static file serving refuses to escape its own folder', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const res = await request(agent, { method: 'GET', path: '/../../../etc/passwd', port: config.port });
       assert.notEqual(res.status, 200);
     });
@@ -147,14 +159,14 @@ test('static file serving refuses to escape its own folder', async () => {
 test('a complete photo upload: files it on the drive and verifies it by reading it back', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('upload-happy', 4000);
       const photoId = randomUUID();
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-DELIV/${photoId}`,
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes), 'Content-Length': bytes.length },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes), 'Content-Length': bytes.length },
         body: bytes
       });
       const parsed = JSON.parse(res.body.toString('utf8'));
@@ -173,14 +185,14 @@ test('a complete photo upload: files it on the drive and verifies it by reading 
 test('two photographs for the same delivery are numbered 001 and 002', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       for (let i = 1; i <= 2; i++) {
         const bytes = jpeg(`multi-${i}`, 3000);
         const res = await request(agent, {
           method: 'PUT',
           path: `/api/photos/5698-DELIV/${randomUUID()}`,
           port: config.port,
-          headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
           body: bytes
         });
         const parsed = JSON.parse(res.body.toString('utf8'));
@@ -195,13 +207,13 @@ test('two photographs for the same delivery are numbered 001 and 002', async () 
 test('part deliveries get their own folder, separate from the standard delivery', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('part-delivery', 3000);
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-p2-deliv/${randomUUID()}`, // lower case, as a careless scan might produce
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
         body: bytes
       });
       const parsed = JSON.parse(res.body.toString('utf8'));
@@ -216,14 +228,14 @@ test('part deliveries get their own folder, separate from the standard delivery'
 test('an invalid delivery reference is refused before anything is written', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('bad-ref', 2000);
       for (const badRef of ['not-a-real-code', '..-DELIV', '5698-P1-DELIV']) {
         const res = await request(agent, {
           method: 'PUT',
           path: `/api/photos/${encodeURIComponent(badRef)}/${randomUUID()}`,
           port: config.port,
-          headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
           body: bytes
         });
         assert.equal(res.status, 400, badRef);
@@ -238,13 +250,13 @@ test('an invalid delivery reference is refused before anything is written', asyn
 test('a non-UUID photo id is refused', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('bad-id', 2000);
       const res = await request(agent, {
         method: 'PUT',
         path: '/api/photos/5698-DELIV/not-a-uuid',
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
         body: bytes
       });
       assert.equal(res.status, 400);
@@ -257,10 +269,10 @@ test('a non-UUID photo id is refused', async () => {
 test('a missing or malformed checksum header is refused', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('no-checksum', 2000);
       for (const bad of [{}, { 'X-Photo-Sha256': 'not-hex' }, { 'X-Photo-Sha256': 'abcd' }]) {
-        const res = await request(agent, { method: 'PUT', path: `/api/photos/5698-DELIV/${randomUUID()}`, port: config.port, headers: { 'Content-Type': 'image/jpeg', ...bad }, body: bytes });
+        const res = await request(agent, { method: 'PUT', path: `/api/photos/5698-DELIV/${randomUUID()}`, port: config.port, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', ...bad }, body: bytes });
         assert.equal(res.status, 400, JSON.stringify(bad));
       }
     });
@@ -272,13 +284,13 @@ test('a missing or malformed checksum header is refused', async () => {
 test('a checksum that does not match what was declared is rejected, and nothing is written', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('mismatch', 2000);
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-DELIV/${randomUUID()}`,
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(Buffer.from('something else entirely')) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(Buffer.from('something else entirely')) },
         body: bytes
       });
       assert.equal(res.status, 409);
@@ -292,13 +304,13 @@ test('a checksum that does not match what was declared is rejected, and nothing 
 test('something that is not really a JPEG is refused even with a correct-looking checksum', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = Buffer.from('this is not a real jpeg file, just plain text padded out'.repeat(5));
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-DELIV/${randomUUID()}`,
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
         body: bytes
       });
       assert.equal(res.status, 400);
@@ -311,13 +323,13 @@ test('something that is not really a JPEG is refused even with a correct-looking
 test('a wrong content-type is refused', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const bytes = jpeg('wrong-type', 2000);
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-DELIV/${randomUUID()}`,
         port: config.port,
-        headers: { 'Content-Type': 'application/octet-stream', 'X-Photo-Sha256': sha256(bytes) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/octet-stream', 'X-Photo-Sha256': sha256(bytes) },
         body: bytes
       });
       assert.equal(res.status, 400);
@@ -330,13 +342,13 @@ test('a wrong content-type is refused', async () => {
 test('an over-limit upload is refused from its declared Content-Length alone, before the body is read', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, { config: { maxPhotoBytes: 500000 } }, async ({ config, agent }) => {
+    await withServer(env, { config: { maxPhotoBytes: 500000 } }, async ({ config, agent, token }) => {
       // Declares a 900 KB body (as a real browser honestly would for a File/Blob
       // this size) but only ever WRITES a small fragment of it - proving the
       // refusal comes from the header alone, since the real bytes never arrive.
       const response = await new Promise((resolve, reject) => {
         const req = https.request(
-          { agent, host: 'localhost', port: config.port, method: 'PUT', path: `/api/photos/5698-DELIV/${randomUUID()}`, headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(jpeg('too-big-declared', 900000)), 'Content-Length': 900000 } },
+          { agent, host: 'localhost', port: config.port, method: 'PUT', path: `/api/photos/5698-DELIV/${randomUUID()}`, headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(jpeg('too-big-declared', 900000)), 'Content-Length': 900000 } },
           (res) => {
             const chunks = [];
             res.on('data', (c) => chunks.push(c));
@@ -361,13 +373,13 @@ test('an over-limit upload is refused from its declared Content-Length alone, be
 test('when the network drive cannot be reached, a clear, retryable error comes back and the photo stays only in the spool cleanup path (nothing left behind)', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, { config: { photoRoot: nodePath.join(env.share, 'does-not-exist') } }, async ({ config, agent }) => {
+    await withServer(env, { config: { photoRoot: nodePath.join(env.share, 'does-not-exist') } }, async ({ config, agent, token }) => {
       const bytes = jpeg('no-drive', 2000);
       const res = await request(agent, {
         method: 'PUT',
         path: `/api/photos/5698-DELIV/${randomUUID()}`,
         port: config.port,
-        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
         body: bytes
       });
       const parsed = JSON.parse(res.body.toString('utf8'));
@@ -383,7 +395,7 @@ test('when the network drive cannot be reached, a clear, retryable error comes b
 test('the health endpoint answers without touching the drive at all', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const res = await request(agent, { method: 'GET', path: '/api/health', port: config.port });
       assert.equal(res.status, 200);
       assert.equal(JSON.parse(res.body.toString('utf8')).hostname, config.hostname);
@@ -396,7 +408,7 @@ test('the health endpoint answers without touching the drive at all', async () =
 test('an unsupported method on the upload path is refused', async () => {
   const env = makeEnv();
   try {
-    await withServer(env, {}, async ({ config, agent }) => {
+    await withServer(env, {}, async ({ config, agent, token }) => {
       const res = await request(agent, { method: 'DELETE', path: `/api/photos/5698-DELIV/${randomUUID()}`, port: config.port });
       assert.equal(res.status, 405);
     });
@@ -417,6 +429,279 @@ test('the plain-HTTP listener serves only the trust profile, and redirects every
       const other = await plainRequest({ path: '/', port: config.port + 1 });
       assert.equal(other.status, 302);
       assert.equal(other.headers.location, `https://${config.hostname}:${config.port}/`);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+// ---- Pairing / authentication (fix 1) --------------------------------------
+
+test('an upload with no Authorization header at all is rejected as unauthorized, and nothing is written', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent }) => {
+      const bytes = jpeg('no-auth', 2000);
+      const res = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+      assert.equal(res.status, 401);
+      assert.deepEqual(fs.readdirSync(env.share), []);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('an upload with a garbage/unknown bearer token is rejected exactly like no token at all', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent }) => {
+      const bytes = jpeg('fake-token', 2000);
+      const res = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: 'Bearer this-was-never-issued-by-anyone', 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+      assert.equal(res.status, 401);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('a paired devices token is accepted for an upload (every other test in this file already relies on this)', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token }) => {
+      const bytes = jpeg('paired-ok', 2000);
+      const res = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+      assert.equal(res.status, 201);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('once a device is revoked, its previously-working token is rejected on the very next upload', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, pairing }) => {
+      const before = jpeg('before-revoke', 2000);
+      const beforeRes = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(before) },
+        body: before
+      });
+      assert.equal(beforeRes.status, 201, 'sanity check: the token works before revocation');
+
+      pairing.revokeAll();
+
+      const after = jpeg('after-revoke', 2000);
+      const afterRes = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(after) },
+        body: after
+      });
+      assert.equal(afterRes.status, 401, 'the same token must no longer work once revoked');
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('POST /api/pair: the right code issues a token that really works for an upload; the wrong code is refused', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, pairing }) => {
+      const { code } = pairing.generateCode();
+      const paired = await request(agent, {
+        method: 'POST',
+        path: '/api/pair',
+        port: config.port,
+        headers: { 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ code }))
+      });
+      assert.equal(paired.status, 200);
+      const issuedToken = JSON.parse(paired.body.toString('utf8')).token;
+      assert.ok(issuedToken);
+
+      const bytes = jpeg('newly-paired', 2000);
+      const uploadRes = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${issuedToken}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+      assert.equal(uploadRes.status, 201, 'the freshly issued token must actually work for a real upload');
+
+      pairing.generateCode(); // a fresh code, so the wrong-code attempt below has something active to fail against
+      const wrong = await request(agent, {
+        method: 'POST',
+        path: '/api/pair',
+        port: config.port,
+        headers: { 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ code: 'WRONGCOD' }))
+      });
+      assert.equal(wrong.status, 401);
+      assert.equal(JSON.parse(wrong.body.toString('utf8')).error, 'wrong_code');
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('GET /api/pair/check reports whether the presented token is currently paired, without needing a real upload', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token }) => {
+      const paired = await request(agent, { method: 'GET', path: '/api/pair/check', port: config.port, headers: { Authorization: `Bearer ${token}` } });
+      assert.equal(JSON.parse(paired.body.toString('utf8')).paired, true);
+
+      const unpaired = await request(agent, { method: 'GET', path: '/api/pair/check', port: config.port, headers: { Authorization: 'Bearer garbage' } });
+      assert.equal(JSON.parse(unpaired.body.toString('utf8')).paired, false);
+
+      const noHeader = await request(agent, { method: 'GET', path: '/api/pair/check', port: config.port });
+      assert.equal(JSON.parse(noHeader.body.toString('utf8')).paired, false);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+// ---- Concurrency / rate protection (fix 2) ---------------------------------
+
+test('a request beyond the concurrency limit is rejected cleanly with a retryable 429 and Retry-After, while the other still succeeds', async () => {
+  const env = makeEnv();
+  try {
+    const tinyLimiter = new ConcurrencyLimiter({ maxConcurrent: 1, maxQueue: 0, maxWaitMs: 200 });
+    await withServer(env, { limiter: tinyLimiter }, async ({ config, agent, token }) => {
+      const makeRequest = () => {
+        const bytes = jpeg(`concurrency-${randomUUID()}`, 3000);
+        return request(agent, {
+          method: 'PUT',
+          path: `/api/photos/5698-DELIV/${randomUUID()}`,
+          port: config.port,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+          body: bytes
+        });
+      };
+
+      // Fired together, deliberately not awaited one at a time - the whole
+      // point is that both requests are genuinely in flight at once.
+      const [a, b] = await Promise.all([makeRequest(), makeRequest()]);
+      const statuses = [a.status, b.status].sort();
+      assert.deepEqual(statuses, [201, 429], `expected one accepted and one rejected, got ${JSON.stringify(statuses)}`);
+
+      const busy = a.status === 429 ? a : b;
+      const parsedBusy = JSON.parse(busy.body.toString('utf8'));
+      assert.equal(parsedBusy.retryable, true);
+      assert.ok(busy.headers['retry-after'], 'a busy response must tell the client when to retry');
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('normal multi-photo uploads for one delivery (well under the concurrency limit) all still succeed', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token }) => {
+      for (let i = 1; i <= 3; i++) {
+        const bytes = jpeg(`multi-ok-${i}`, 2000);
+        const res = await request(agent, {
+          method: 'PUT',
+          path: `/api/photos/5698-DELIV/${randomUUID()}`,
+          port: config.port,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+          body: bytes
+        });
+        assert.equal(res.status, 201, `photo ${i} must still succeed under the default concurrency limit`);
+      }
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+// ---- minFreeGb enforcement (fix 3) ------------------------------------------
+
+test('insufficient free space is reported to the iPad as a clear, retryable 507, and nothing is written', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, { config: { minFreeGb: 999999999 } }, async ({ config, agent, token }) => {
+      const bytes = jpeg('no-space-http', 2000);
+      const res = await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+      const parsed = JSON.parse(res.body.toString('utf8'));
+      assert.equal(res.status, 507);
+      assert.equal(parsed.retryable, true);
+      assert.deepEqual(fs.readdirSync(env.share), []);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+// ---- Audit logging (fix 4) --------------------------------------------------
+
+test('successful uploads, unauthenticated attempts, and failed pairing attempts all log the requesting IP, and never a token or pairing code', async () => {
+  const env = makeEnv();
+  try {
+    const logger = quietLogger();
+    await withServer(env, { logger }, async ({ config, agent, token, pairing }) => {
+      const bytes = jpeg('ip-log', 2000);
+      await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) },
+        body: bytes
+      });
+
+      await request(agent, {
+        method: 'PUT',
+        path: `/api/photos/5698-DELIV/${randomUUID()}`,
+        port: config.port,
+        headers: { 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': sha256(bytes) }, // no Authorization at all
+        body: bytes
+      });
+
+      const pairingCode = pairing.generateCode().code;
+      await request(agent, {
+        method: 'POST',
+        path: '/api/pair',
+        port: config.port,
+        headers: { 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ code: 'WRONGCOD' }))
+      });
+
+      const logged = logger.lines.join('\n');
+      assert.match(logged, /127\.0\.0\.1|::1/, 'the requesting IP must appear in the logs');
+      assert.ok(!logged.includes(token), 'the real bearer token must never be logged');
+      assert.ok(!logged.includes(pairingCode), 'a pairing code must never be logged');
     });
   } finally {
     env.cleanup();

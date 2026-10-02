@@ -31,6 +31,7 @@ const {
 
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
 const SHA256 = /^[0-9a-f]{64}$/;
+const GB = 1024 ** 3;
 
 class ArchiveError extends Error {
   constructor(code, message) {
@@ -134,7 +135,7 @@ async function sweepIncoming({ root, platform }) {
 // Files one photograph (already downloaded to the local spool) into <root>/<REFERENCE>/photo-NNN.jpg.
 // `hooks.afterPublish` exists only so tests can simulate a crash right after the rename.
 async function archivePhoto(params, hooks = {}) {
-  const { root, reference, photoId, spoolPath, sizeBytes, sha256, platform } = params;
+  const { root, reference, photoId, spoolPath, sizeBytes, sha256, platform, minFreeGb = 0 } = params;
 
   if (!UUID.test(String(photoId))) throw new ArchiveError('BAD_INPUT', 'invalid photograph id');
   if (!SHA256.test(String(sha256)) || !Number.isInteger(sizeBytes) || sizeBytes < 1) throw new ArchiveError('BAD_INPUT', 'invalid size or checksum');
@@ -150,6 +151,21 @@ async function archivePhoto(params, hooks = {}) {
 
   checkRoot(root, platform);
   await requireRoot(root, platform);
+
+  // Checked before anything is read or written, so a low-space rejection
+  // can never leave a partial file behind - the whole point of minFreeGb.
+  // `space.ok === false` means free space could not be determined at all
+  // (fs.statfs unavailable, or the share didn't answer it) - that is its own
+  // normal, reported outcome elsewhere (see fs-ops.js/storage-test.js), and
+  // is NOT treated as "below the threshold" here: an indeterminate reading
+  // must never be the reason archiving stops working entirely.
+  if (minFreeGb > 0) {
+    const space = await fsOps.getFreeSpace(root);
+    if (space.ok && space.freeBytes < minFreeGb * GB) {
+      const freeGb = (space.freeBytes / GB).toFixed(1);
+      throw new ArchiveError('INSUFFICIENT_SPACE', `the archive drive has only ${freeGb} GB free, below the configured minimum of ${minFreeGb} GB - nothing was written`);
+    }
+  }
 
   const data = await fs.readFile(spoolPath);
   if (data.length !== sizeBytes || fsOps.sha256OfBuffer(data) !== sha256) {

@@ -7,6 +7,11 @@
 
 (() => {
   const els = {
+    pairingScreen: document.getElementById('pairing-screen'),
+    pairingForm: document.getElementById('pairing-form'),
+    pairingCodeInput: document.getElementById('pairing-code-input'),
+    pairingError: document.getElementById('pairing-error'),
+    pairingBusy: document.getElementById('pairing-busy'),
     scanScreen: document.getElementById('scan-screen'),
     captureScreen: document.getElementById('capture-screen'),
     resultScreen: document.getElementById('result-screen'),
@@ -46,7 +51,99 @@
   };
 
   function show(screen) {
-    for (const el of [els.scanScreen, els.captureScreen, els.resultScreen]) el.hidden = el !== screen;
+    for (const el of [els.pairingScreen, els.scanScreen, els.captureScreen, els.resultScreen]) el.hidden = el !== screen;
+  }
+
+  // ---- PAIRING screen -----------------------------------------------------
+  // One-time-per-device: the iPad is paired once (a short code read off the
+  // PC's own screen), then keeps a long-lived token in localStorage for
+  // every future upload - see uploadOne() below. Never asks for the code
+  // again unless the PC administrator deliberately resets pairing.
+
+  const TOKEN_STORAGE_KEY = 'deliveryPhotosToken';
+
+  function getStoredToken() {
+    try {
+      return localStorage.getItem(TOKEN_STORAGE_KEY) || '';
+    } catch {
+      return ''; // private browsing / storage blocked - treated as "not paired"
+    }
+  }
+
+  function setStoredToken(token) {
+    try {
+      if (token) localStorage.setItem(TOKEN_STORAGE_KEY, token);
+      else localStorage.removeItem(TOKEN_STORAGE_KEY);
+    } catch {
+      // Nothing useful to do if storage is blocked - the next upload's 401
+      // (if any) is what will actually surface the problem to the person.
+    }
+  }
+
+  function showPairingScreen(message) {
+    show(els.pairingScreen);
+    els.pairingCodeInput.value = '';
+    els.pairingError.hidden = !message;
+    els.pairingError.textContent = message || '';
+    els.pairingBusy.hidden = true;
+  }
+
+  els.pairingForm.addEventListener('submit', async (event) => {
+    event.preventDefault();
+    const code = els.pairingCodeInput.value.trim();
+    if (!code) {
+      els.pairingError.hidden = false;
+      els.pairingError.textContent = 'Enter the pairing code shown on the PC.';
+      return;
+    }
+
+    els.pairingError.hidden = true;
+    els.pairingBusy.hidden = false;
+    try {
+      const response = await fetch('/api/pair', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ code })
+      });
+      const data = await response.json().catch(() => ({}));
+      if (!response.ok || !data.token) {
+        showPairingScreen(data.message || 'Could not pair this device.');
+        return;
+      }
+      setStoredToken(data.token);
+      startScanScreen();
+    } catch {
+      showPairingScreen('Could not reach the Delivery Photos service on this PC.');
+    } finally {
+      els.pairingBusy.hidden = true;
+    }
+  });
+
+  // Called once at startup, and again if an upload ever comes back 401 (the
+  // PC administrator reset pairing, or this device was never paired at
+  // all) - decides which screen to show without requiring a real photo
+  // upload just to find out whether the stored token still works.
+  async function checkPairingThenStart() {
+    const token = getStoredToken();
+    if (!token) {
+      showPairingScreen();
+      return;
+    }
+    try {
+      const response = await fetch('/api/pair/check', { headers: { Authorization: `Bearer ${token}` } });
+      const data = await response.json().catch(() => ({ paired: false }));
+      if (data.paired) {
+        startScanScreen();
+      } else {
+        setStoredToken('');
+        showPairingScreen('This iPad is no longer paired. Pair it again below.');
+      }
+    } catch {
+      // Could not even reach the server to check - rather than block the
+      // whole app on a transient network hiccup, proceed as if paired; a
+      // real upload attempt will surface the same 401 if it is truly revoked.
+      startScanScreen();
+    }
   }
 
   // ---- SCAN screen ------------------------------------------------------
@@ -219,19 +316,25 @@
       const xhr = new XMLHttpRequest();
       xhr.open('PUT', `/api/photos/${encodeURIComponent(reference)}/${photo.id}`);
       xhr.setRequestHeader('Content-Type', 'image/jpeg');
+      xhr.setRequestHeader('Authorization', `Bearer ${getStoredToken()}`);
       sha256Hex(photo.blob).then((hash) => {
         xhr.setRequestHeader('X-Photo-Sha256', hash);
         xhr.onload = () => {
-          if (xhr.status >= 200 && xhr.status < 300) resolve({ ok: true });
-          else {
-            let message = `The server answered ${xhr.status}.`;
-            try {
-              message = JSON.parse(xhr.responseText).message || message;
-            } catch {
-              // non-JSON error body - keep the generic message
-            }
-            resolve({ ok: false, error: message });
+          if (xhr.status >= 200 && xhr.status < 300) {
+            resolve({ ok: true });
+            return;
           }
+          let message = `The server answered ${xhr.status}.`;
+          try {
+            message = JSON.parse(xhr.responseText).message || message;
+          } catch {
+            // non-JSON error body - keep the generic message
+          }
+          // retryable (429/5xx) is distinct from "this device needs to pair
+          // again" (401) - the caller uses needsPairing to decide whether to
+          // send the person back to the pairing screen instead of just
+          // showing a normal per-photo failure.
+          resolve({ ok: false, error: message, needsPairing: xhr.status === 401 });
         };
         xhr.onerror = () => resolve({ ok: false, error: 'Could not reach the Delivery Photos service on this PC.' });
         xhr.ontimeout = () => resolve({ ok: false, error: 'The upload timed out.' });
@@ -243,12 +346,13 @@
 
   // Uploads every not-yet-done photograph IN ORDER (never in parallel - this
   // is what lets "Saving N of M" mean something concrete), updating the
-  // saving overlay as it goes. Returns { savedCount, failedCount }.
+  // saving overlay as it goes. Returns { savedCount, failedCount, needsPairing }.
   async function uploadPending() {
     const toSend = state.photos.filter((p) => p.status !== 'done');
     els.savingOverlay.hidden = false;
     let done = state.photos.length - toSend.length;
     const total = state.photos.length;
+    let needsPairing = false;
 
     for (const photo of toSend) {
       photo.status = 'uploading';
@@ -263,17 +367,27 @@
       } else {
         photo.status = 'failed';
         photo.error = result.error;
+        if (result.needsPairing) needsPairing = true;
       }
       renderThumbnails();
     }
 
     els.savingOverlay.hidden = true;
-    return { savedCount: state.photos.filter((p) => p.status === 'done').length, failedCount: state.photos.filter((p) => p.status === 'failed').length };
+    return { savedCount: state.photos.filter((p) => p.status === 'done').length, failedCount: state.photos.filter((p) => p.status === 'failed').length, needsPairing };
   }
 
   async function runUploadAndShowResult() {
-    const { savedCount, failedCount } = await uploadPending();
+    const { savedCount, failedCount, needsPairing } = await uploadPending();
     const total = state.photos.length;
+
+    // This device's token was rejected (pairing was reset, or never paired
+    // at all somehow) - sent back to pair again rather than left stuck
+    // showing "failed" on every retry forever with no way out.
+    if (needsPairing) {
+      setStoredToken('');
+      showPairingScreen('This iPad is no longer paired - the photographs already saved are safe, but the rest need pairing again first.');
+      return;
+    }
 
     if (failedCount === 0) {
       els.resultIcon.textContent = '✓';
@@ -312,5 +426,5 @@
 
   // ---- Start ---------------------------------------------------------------
 
-  startScanScreen();
+  checkPairingThenStart();
 })();

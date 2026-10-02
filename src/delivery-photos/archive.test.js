@@ -230,6 +230,49 @@ test('archivePhoto detects a spool file that does not match its claimed checksum
   }
 });
 
+test('minFreeGb rejects an upload when free space is below the configured threshold, before anything is written', async () => {
+  const env = makeEnv();
+  try {
+    const bytes = jpeg('no-space', 1000);
+    await assert.rejects(
+      archive.archivePhoto(params(env, { bytes, spoolPath: await writeSpool(env, bytes), minFreeGb: 999999999 })),
+      (err) => {
+        assert.ok(err instanceof archive.ArchiveError);
+        assert.equal(err.code, 'INSUFFICIENT_SPACE');
+        assert.match(err.message, /GB free/);
+        return true;
+      }
+    );
+    assert.deepEqual(fs.readdirSync(env.share), [], 'nothing must be created when space is rejected');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('minFreeGb does not block a normal upload when there is plenty of free space', async () => {
+  const env = makeEnv();
+  try {
+    const bytes = jpeg('plenty-of-space', 1000);
+    const result = await archive.archivePhoto(params(env, { bytes, spoolPath: await writeSpool(env, bytes), minFreeGb: 0.0001 }));
+    assert.equal(result.storagePath, '5698-DELIV/photo-001.jpg');
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('minFreeGb of 0 (the default when not configured) never checks free space at all', async () => {
+  const env = makeEnv();
+  try {
+    const bytes = jpeg('no-check', 1000);
+    // minFreeGb omitted entirely, exactly like every other test in this file -
+    // must behave exactly as before this feature existed.
+    const result = await archive.archivePhoto(params(env, { bytes, spoolPath: await writeSpool(env, bytes) }));
+    assert.equal(result.storagePath, '5698-DELIV/photo-001.jpg');
+  } finally {
+    env.cleanup();
+  }
+});
+
 test('sweepIncoming removes only leftover .part files from a previous crash', async () => {
   const env = makeEnv();
   try {

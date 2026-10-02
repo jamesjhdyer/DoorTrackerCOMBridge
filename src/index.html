@@ -81,6 +81,7 @@
         <tbody>
           <tr><td>iPad address</td><td id="dp-address">-</td><td><button id="dp-copy-address-btn" disabled>Copy</button></td></tr>
           <tr><td>Photo folder</td><td id="dp-photo-root" colspan="2">-</td></tr>
+          <tr><td>Paired iPads</td><td id="dp-paired-count" colspan="2">0</td></tr>
           <tr><td>Photos filed today</td><td id="dp-filed-today" colspan="2">0</td></tr>
           <tr><td>Failed today</td><td id="dp-failed-today" colspan="2">0</td></tr>
           <tr><td>Last problem</td><td id="dp-last-error" colspan="2">-</td></tr>
@@ -95,6 +96,16 @@
         <button id="dp-open-logs-btn">Open Logs</button>
       </div>
       <pre id="dp-test-result" class="dp-test-result" hidden></pre>
+    </div>
+
+    <div class="log-section">
+      <h2>Delivery Photos - Pair an iPad</h2>
+      <p class="hint">An iPad must be paired once before it can upload photos - this is what stops any other device on the network from uploading just because it can reach this PC. Open the Delivery Photos page on the iPad, then generate a code here and type it in there.</p>
+      <div class="field buttons">
+        <button id="dp-pair-btn">Pair a New iPad</button>
+        <button id="dp-revoke-btn">Reset Pairing (un-pair all iPads)</button>
+      </div>
+      <pre id="dp-pairing-result" class="dp-test-result" hidden></pre>
     </div>
 
     <div class="log-section">

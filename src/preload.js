@@ -39,6 +39,8 @@ contextBridge.exposeInMainWorld('deliveryPhotos', {
   start: () => ipcRenderer.invoke('start-delivery-photos-service'),
   stop: () => ipcRenderer.invoke('stop-delivery-photos-service'),
   testStorage: () => ipcRenderer.invoke('test-delivery-photos-storage'),
+  generatePairingCode: () => ipcRenderer.invoke('generate-delivery-photos-pairing-code'),
+  revokeDevices: () => ipcRenderer.invoke('revoke-delivery-photos-devices'),
   openPhotographsFolder: () => ipcRenderer.invoke('open-delivery-photographs-folder'),
   openLogsFolder: () => ipcRenderer.invoke('open-delivery-photos-logs-folder'),
 
