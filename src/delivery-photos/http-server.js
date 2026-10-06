@@ -23,6 +23,8 @@ const { randomUUID, createHash } = require('node:crypto');
 
 const { parse: parseReference } = require('./reference');
 const { buildTrustProfileMobileConfig } = require('./certs');
+const { createTrackingEvent, TrackingError } = require('./tracking');
+const { recordFiledSession } = require('./filed-today');
 
 const STATIC_ROOT = nodePath.join(__dirname, '..', '..', 'delivery-photos-web');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -265,6 +267,54 @@ function handlePairCheck(req, res, deps) {
   return sendJson(res, 200, { paired: auth.ok });
 }
 
+// POST /api/delivery-sessions/complete { reference, photosSaved } - called
+// by the iPad ONLY once every photograph in that delivery's batch already
+// came back 201 from PUT /api/photos/... (checksum-verified, read back off
+// the drive - see http-server.js's handleUpload). This endpoint does not
+// re-verify any of that; it exists purely to record "this whole session is
+// done" as a trackable event, for Google Sheets - it never touches the
+// archive itself. Same pairing requirement as an upload: a device that
+// cannot upload photos must not be able to manufacture a tracking event
+// either. Answers immediately once the event is durably queued locally -
+// never waits on the internet (see tracking.js's own header comment for why).
+async function handleSessionComplete(req, res, deps) {
+  const { pairing, logger, queueDir, filedLogDir } = deps;
+  const ip = clientIp(req);
+
+  const auth = pairing.verify(bearerToken(req));
+  if (!auth.ok) {
+    logger.warn(`Rejected a session-complete report from ${ip}: not a paired device.`);
+    return sendJson(res, 401, { error: 'unauthorized', message: 'This device is not paired.' }, { closeAfter: true });
+  }
+
+  let body;
+  try {
+    const raw = await readBody(req, 1000);
+    body = JSON.parse(raw.toString('utf8') || '{}');
+  } catch {
+    return sendJson(res, 400, { error: 'bad_body', message: 'Malformed request.' }, { closeAfter: true });
+  }
+
+  try {
+    const record = createTrackingEvent({ reference: body.reference, photosSaved: Number(body.photosSaved) }, { queueDir });
+    logger.info(`Tracking event created: ${record.eventId} (${record.reference}, ${record.photosSaved} photo${record.photosSaved === 1 ? '' : 's'}) from ${ip}.`);
+    // The local "Orders filed today" ledger (see filed-today.js). A display
+    // figure only - failing to write it must never fail a delivery whose
+    // photographs and tracking event are already safely saved.
+    try {
+      recordFiledSession(filedLogDir, record);
+    } catch (err) {
+      logger.warn(`Could not add ${record.reference} to the filed-today ledger: ${err && err.message}`);
+    }
+    if (process.send) process.send({ event: 'tracking-pending', eventId: record.eventId });
+    return sendJson(res, 201, { ok: true, eventId: record.eventId });
+  } catch (err) {
+    if (err instanceof TrackingError) return sendJson(res, 400, { error: 'bad_request', message: err.message });
+    logger.error(`Could not create a tracking event from ${ip}: ${err && err.message}`);
+    return sendJson(res, 500, { error: 'internal', message: 'Could not record this delivery as complete.' });
+  }
+}
+
 function router(req, res, deps) {
   const url = new URL(req.url, 'http://localhost');
   const match = /^\/api\/photos\/([^/]+)\/([^/]+)$/.exec(url.pathname);
@@ -287,6 +337,14 @@ function router(req, res, deps) {
 
   if (req.method === 'GET' && url.pathname === '/api/pair/check') {
     return handlePairCheck(req, res, deps);
+  }
+
+  if (req.method === 'POST' && url.pathname === '/api/delivery-sessions/complete') {
+    handleSessionComplete(req, res, deps).catch((err) => {
+      deps.logger.error(`Unexpected error handling a session-complete report: ${err && err.message}`);
+      if (!res.headersSent) sendJson(res, 500, { error: 'internal', message: 'Something went wrong.' });
+    });
+    return;
   }
 
   if (req.method === 'GET' && url.pathname === '/api/health') {
@@ -316,8 +374,8 @@ function router(req, res, deps) {
 // `pairing` (auth.js's PairingManager) and `limiter` (concurrency.js's
 // ConcurrencyLimiter) are created once per worker instance by the caller
 // (worker-entry.js) and passed in here, same as `runWorker` already is.
-function startServers({ config, credentials, runWorker, logger, spoolDir, testMode, pairing, limiter }) {
-  const deps = { config, runWorker, logger, spoolDir, testMode, pairing, limiter };
+function startServers({ config, credentials, runWorker, logger, spoolDir, testMode, pairing, limiter, queueDir, filedLogDir }) {
+  const deps = { config, runWorker, logger, spoolDir, testMode, pairing, limiter, queueDir, filedLogDir };
 
   const httpsServer = https.createServer({ key: credentials.key, cert: credentials.cert }, (req, res) => router(req, res, deps));
   // Explicit, intentionally generous-but-bounded request timeouts (Node's

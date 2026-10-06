@@ -376,6 +376,24 @@
     return { savedCount: state.photos.filter((p) => p.status === 'done').length, failedCount: state.photos.filter((p) => p.status === 'failed').length, needsPairing };
   }
 
+  // Tells the Windows app that this whole delivery's photographs are
+  // confirmed saved, so it can record a Google Sheets tracking event - only
+  // ever called after EVERY photo in the session already came back 201 from
+  // PUT /api/photos/... (checksum-verified, read back off the drive). Fire
+  // and forget, deliberately: whether this succeeds, fails, or the internet
+  // to Google Sheets is down for days makes no difference to the photos
+  // already safely on the drive, so it must never affect what is shown
+  // here - only a console note for anyone debugging on the iPad itself.
+  function reportSessionComplete(reference, photosSaved) {
+    fetch(`/api/delivery-sessions/complete`, {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${getStoredToken()}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({ reference, photosSaved })
+    }).catch((err) => {
+      console.warn('Could not report this delivery as complete for tracking (photographs are still safely saved):', err);
+    });
+  }
+
   async function runUploadAndShowResult() {
     const { savedCount, failedCount, needsPairing } = await uploadPending();
     const total = state.photos.length;
@@ -390,6 +408,7 @@
     }
 
     if (failedCount === 0) {
+      if (total > 0) reportSessionComplete(state.reference.reference, savedCount);
       els.resultIcon.textContent = '✓';
       els.resultIcon.className = 'result-icon result-ok';
       els.resultHeading.textContent = total === 1 ? '1 photograph saved' : `${total} photographs saved`;

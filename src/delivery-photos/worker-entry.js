@@ -11,16 +11,22 @@
 //   parent -> worker   { cmd: 'reload' }                  re-read settings and (re)start the servers
 //             worker    { cmd: 'stop' }                    stop the servers, then this process exits
 //   worker  -> parent   { event: 'status', status }        the current status.json contents, on every change
+//   worker  -> parent   { event: 'tracking-pending' }      a delivery-photo tracking event was just queued (see tracking.js) -
+//                                                            a nudge only; main.js's own periodic sweep is what actually syncs it
 //
-// Never talks to anything outside the workshop network - this process makes
-// no outbound requests of its own at all (only the mDNS responder and the
-// two local listeners, both LAN-only).
+// Never talks to anything outside the workshop network itself - this process
+// makes no outbound internet requests of its own at all (only the mDNS
+// responder and the two local listeners, both LAN-only). The one exception
+// by design: delivery-photo tracking events are written to a local queue
+// folder ONLY (see tracking.js) - syncing that queue to Google Sheets over
+// the internet is main.js's job, not this process's, specifically so this
+// invariant never has to change.
 
 const { loadConfig } = require('./config');
 const { createLogger } = require('./logger');
 const { createStatusFile } = require('./status');
 const { acquireLock } = require('./lock');
-const { ensureLogsDir, statusPath, lockPath, spoolDir, certsDir, devicesPath } = require('./paths');
+const { ensureLogsDir, statusPath, lockPath, spoolDir, certsDir, devicesPath, trackingQueueDir, filedLogDir } = require('./paths');
 const { ensureCertificates } = require('./certs');
 const { advertise } = require('./mdns');
 const { startServers } = require('./http-server');
@@ -138,7 +144,9 @@ class Runtime {
         logger: this.logger,
         spoolDir: spoolDir(),
         pairing: this.pairing,
-        limiter: this.limiter
+        limiter: this.limiter,
+        queueDir: trackingQueueDir(),
+        filedLogDir: filedLogDir()
       });
       await this.serverHandle.listen();
     } catch (err) {
@@ -155,8 +163,6 @@ class Runtime {
       photoRoot: config.photoRoot,
       startedAt: new Date().toISOString(),
       lastError: '',
-      filedToday: this.status.get().filedToday || 0,
-      failedToday: this.status.get().failedToday || 0,
       pairedDevices: this.pairing.pairedCount()
     });
     this.logger.info(`Delivery Photos running: https://${config.hostname}:${config.port}/`);

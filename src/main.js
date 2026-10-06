@@ -12,6 +12,10 @@ const windowsPrinter = require('./printing/windows-printer');
 const { buildTestPatternZpl } = require('./printing/zpl-image');
 const deliveryPhotosConfig = require('./delivery-photos/config');
 const { runInWorker: runDeliveryPhotosWorkerOp } = require('./delivery-photos/worker-runner');
+const { listPendingEvents } = require('./delivery-photos/tracking');
+const { createTrackingSync } = require('./delivery-photos/tracking-sync');
+const { countOrdersFiledOn } = require('./delivery-photos/filed-today');
+const { createLogger: createDeliveryPhotosLogger } = require('./delivery-photos/logger');
 
 let mainWindow = null;
 
@@ -65,6 +69,41 @@ const deliveryPhotos = {
   pendingRequests: new Map() // requestId -> { resolve, timer } - see sendWorkerRequest()
 };
 
+// ---- Delivery-photo tracking sync (Google Sheets) ----
+//
+// The worker process (forked above) only ever WRITES a small local file per
+// completed delivery session (see tracking.js) - it makes no outbound
+// internet requests of its own, by design (see worker-entry.js's header
+// comment). This process already has internet access and the configured
+// website address for everything else (scans, print jobs), so it is this
+// process's job to read that local queue and sync it to the website's own
+// Google Sheets endpoint - never the other way around, and never on the
+// path that tells the iPad its photographs were saved (that already
+// finished, successfully, before a tracking event is ever created).
+const TRACKING_SYNC_INTERVAL_MS = 60000;
+const TRACKING_SYNC_TIMEOUT_MS = 8000;
+const DELIVERY_PHOTOS_TRACKING_QUEUE_DIR = () => path.join(DELIVERY_PHOTOS_HOME(), 'state', 'tracking-queue');
+// Written by the worker (see filed-today.js / paths.js's filedLogDir) and
+// only ever read here, to count "Orders filed today".
+const DELIVERY_PHOTOS_FILED_LOG_DIR = () => path.join(DELIVERY_PHOTOS_HOME(), 'state', 'filed-sessions');
+
+// Reuses the exact same daily log file the Delivery Photos worker itself
+// writes to (see delivery-photos/logger.js) - sync activity shows up
+// alongside everything else "Open Logs" already surfaces, in one place,
+// rather than a second log file nobody thinks to check. A plain append from
+// two separate processes to the same path is fine here: each call writes
+// one short line in a single fs.appendFileSync, never a read-modify-write.
+const trackingLogger = createDeliveryPhotosLogger({ dir: path.join(DELIVERY_PHOTOS_HOME(), 'logs') });
+
+const trackingSync = createTrackingSync({
+  queueDir: DELIVERY_PHOTOS_TRACKING_QUEUE_DIR,
+  getApiBase: () => deriveApiBase(loadSettingsFromDisk().apiUrl),
+  logger: trackingLogger,
+  timeoutMs: TRACKING_SYNC_TIMEOUT_MS
+});
+const trackingSyncStatus = trackingSync.status;
+const syncPendingTrackingEvents = trackingSync.syncPending;
+
 function sendDeliveryPhotosStatus() {
   if (mainWindow && !mainWindow.isDestroyed()) {
     mainWindow.webContents.send('delivery-photos-status', deliveryPhotos.status);
@@ -104,6 +143,16 @@ function startDeliveryPhotosWorker() {
     if (message.event === 'status') {
       deliveryPhotos.status = message.status;
       sendDeliveryPhotosStatus();
+      return;
+    }
+    if (message.event === 'tracking-pending') {
+      // Best-effort nudge for responsiveness only - the periodic sweep
+      // (started in app.whenReady() below) is what actually guarantees this
+      // ever gets synced, even if this message is somehow missed.
+      syncPendingTrackingEvents().catch(() => {});
+      // Lets the renderer refresh "Orders filed today" straight away rather
+      // than on its next poll.
+      if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('delivery-photos-session-filed');
       return;
     }
     // Reply to a one-off generate-pairing-code/revoke-devices request (see
@@ -183,6 +232,15 @@ app.whenReady().then(() => {
   // otherwise rather than starting a worker with nothing to do.
   const configured = deliveryPhotosConfig.loadConfig({ filePath: path.join(DELIVERY_PHOTOS_HOME(), 'config.json') });
   if (configured.ok && configured.config.autoStart) startDeliveryPhotosWorker();
+
+  // Picks up anything left queued from before a restart (the PC, or just
+  // this app) immediately, rather than waiting a full interval - see
+  // tracking.js's own header comment on why the queue survives a restart at
+  // all. The periodic sweep after this is the real durability guarantee;
+  // this is only for not needlessly waiting up to a minute on a cold start.
+  syncPendingTrackingEvents().catch(() => {});
+  const trackingSyncTimer = setInterval(() => syncPendingTrackingEvents().catch(() => {}), TRACKING_SYNC_INTERVAL_MS);
+  trackingSyncTimer.unref();
 });
 
 app.on('window-all-closed', () => {
@@ -739,13 +797,34 @@ ipcMain.handle('open-delivery-photographs-folder', async () => {
   return error ? { ok: false, error } : { ok: true };
 });
 
+// Pending/last-result state for the Google Sheets tracking sync (see
+// syncPendingTrackingEvents() above) plus "Orders filed today" - both read
+// fresh every time from local files, so neither depends on Google Sheets
+// being reachable, and the daily figure resets by itself at UK midnight.
+ipcMain.handle('get-delivery-photos-tracking-status', async () => {
+  const pendingCount = listPendingEvents(DELIVERY_PHOTOS_TRACKING_QUEUE_DIR()).length;
+  let ordersFiledToday = null;
+  try {
+    ordersFiledToday = countOrdersFiledOn(DELIVERY_PHOTOS_FILED_LOG_DIR());
+  } catch (err) {
+    trackingLogger.warn(`Could not read the filed-today ledger: ${err.message}`);
+  }
+  return {
+    pendingCount,
+    ordersFiledToday,
+    lastSyncAt: trackingSyncStatus.lastSyncAt,
+    lastSyncError: trackingSyncStatus.lastSyncError,
+    lastSyncErrorAt: trackingSyncStatus.lastSyncErrorAt
+  };
+});
+
 ipcMain.handle('open-delivery-photos-logs-folder', async () => {
-  // The worker process is the only thing that writes here (see its own
-  // ensureLogsDir(), which additionally falls back to the OS temp folder if
-  // this one turns out to be read-only) - this is a plain "open what's
-  // there" action, so it is fine to just compute the normal path directly
-  // rather than route through that fallback logic for a folder this process
-  // never writes to itself.
+  // The worker process writes here (see its own ensureLogsDir(), which
+  // additionally falls back to the OS temp folder if this one turns out to
+  // be read-only), and this process's own tracking-sync logger (see
+  // trackingLogger above) appends to the same daily file - this is a plain
+  // "open what's there" action, so it is fine to just compute the normal
+  // path directly rather than route through that fallback logic.
   const logsDir = path.join(DELIVERY_PHOTOS_HOME(), 'logs');
   if (!fs.existsSync(logsDir)) return { ok: false, error: 'There are no logs yet - the Delivery Photos service has not run on this PC.' };
   const error = await shell.openPath(logsDir);

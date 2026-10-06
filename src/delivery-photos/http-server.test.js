@@ -47,17 +47,19 @@ async function withServer(env, overrides, fn) {
   const logger = overrides.logger || quietLogger();
   const pairing = overrides.pairing || new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
   const limiter = overrides.limiter || new ConcurrencyLimiter();
+  const queueDir = overrides.queueDir || nodePath.join(env.home, 'tracking-queue');
+  const filedLogDir = nodePath.join(env.home, 'filed-sessions');
   const { token } = pairing.pair(pairing.generateCode().code);
   // photoRoot is env.share, a real local temp folder - on a real Windows
   // machine (including GitHub Actions' own runners) that is a genuine
   // drive-letter path, which production now accepts directly (see
   // archive.test.js/config.test.js/storage-test.test.js for the path-shape
   // rules themselves), so no test-only opt-in is needed here.
-  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, testMode: overrides.testMode, pairing, limiter });
+  const handle = startServers({ config, credentials, runWorker: overrides.runWorker || runInWorker, logger, spoolDir: env.spool, testMode: overrides.testMode, pairing, limiter, queueDir, filedLogDir });
   await handle.listen();
   const agent = new https.Agent({ ca: credentials.caCert });
   try {
-    await fn({ config, agent, logger, handle, token, pairing, limiter });
+    await fn({ config, agent, logger, handle, token, pairing, limiter, queueDir, filedLogDir });
   } finally {
     await handle.close();
     agent.destroy();
@@ -702,6 +704,180 @@ test('successful uploads, unauthenticated attempts, and failed pairing attempts 
       assert.match(logged, /127\.0\.0\.1|::1/, 'the requesting IP must appear in the logs');
       assert.ok(!logged.includes(token), 'the real bearer token must never be logged');
       assert.ok(!logged.includes(pairingCode), 'a pairing code must never be logged');
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+// ---- Delivery-photo tracking events (POST /api/delivery-sessions/complete) -
+
+const { listPendingEvents } = require('./tracking');
+
+test('a completed session with no auth is rejected, and nothing is queued', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, queueDir }) => {
+      const res = await request(agent, {
+        method: 'POST',
+        path: '/api/delivery-sessions/complete',
+        port: config.port,
+        headers: { 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ reference: '5698-DELIV', photosSaved: 2 }))
+      });
+      assert.equal(res.status, 401);
+      assert.deepEqual(listPendingEvents(queueDir), []);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('a paired device reporting a completed session queues a tracking event with the right fields', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, queueDir }) => {
+      const res = await request(agent, {
+        method: 'POST',
+        path: '/api/delivery-sessions/complete',
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ reference: '5698-p2-deliv', photosSaved: 4 }))
+      });
+      assert.equal(res.status, 201);
+      const parsed = JSON.parse(res.body.toString('utf8'));
+      assert.ok(parsed.eventId);
+
+      const pending = listPendingEvents(queueDir);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].eventId, parsed.eventId);
+      assert.equal(pending[0].reference, '5698-P2-DELIV');
+      assert.equal(pending[0].orderNumber, '5698');
+      assert.equal(pending[0].deliveryType, 'Part Delivery');
+      assert.equal(pending[0].partNo, 2);
+      assert.equal(pending[0].photosSaved, 4);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('an invalid delivery reference or a non-positive photo count is refused, and nothing is queued', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, queueDir }) => {
+      for (const body of [{ reference: 'not-a-code', photosSaved: 1 }, { reference: '5698-DELIV', photosSaved: 0 }, { reference: '5698-DELIV', photosSaved: 'two' }]) {
+        const res = await request(agent, {
+          method: 'POST',
+          path: '/api/delivery-sessions/complete',
+          port: config.port,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: Buffer.from(JSON.stringify(body))
+        });
+        assert.equal(res.status, 400, JSON.stringify(body));
+      }
+      assert.deepEqual(listPendingEvents(queueDir), []);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('tracking events log the requesting IP, and never a token', async () => {
+  const env = makeEnv();
+  try {
+    const logger = quietLogger();
+    await withServer(env, { logger }, async ({ config, agent, token }) => {
+      await request(agent, {
+        method: 'POST',
+        path: '/api/delivery-sessions/complete',
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ reference: '5698-DELIV', photosSaved: 1 }))
+      });
+      const logged = logger.lines.join('\n');
+      assert.match(logged, /127\.0\.0\.1|::1/);
+      assert.ok(!logged.includes(token));
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('completed sessions feed "Orders filed today" by unique order number; refused ones do not', async () => {
+  const { countOrdersFiledOn } = require('./filed-today');
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, filedLogDir }) => {
+      const complete = (reference, headers = { Authorization: `Bearer ${token}` }) =>
+        request(agent, {
+          method: 'POST',
+          path: '/api/delivery-sessions/complete',
+          port: config.port,
+          headers: { ...headers, 'Content-Type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ reference, photosSaved: 2 }))
+        });
+
+      for (const ref of ['5698-DELIV', '5698-P-DELIV', '5698-P2-DELIV', '5701-DELIV', '5702-P-DELIV']) {
+        assert.equal((await complete(ref)).status, 201);
+      }
+      assert.equal((await complete('5800-DELIV', {})).status, 401);
+      assert.equal((await complete('not-a-code')).status, 400);
+
+      assert.equal(countOrdersFiledOn(filedLogDir), 3);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('end to end: saved photos then session-complete feed the queue and "Orders filed today"; a failed session does not', async () => {
+  const { countOrdersFiledOn } = require('./filed-today');
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, queueDir, filedLogDir }) => {
+      const auth = { Authorization: `Bearer ${token}` };
+      const upload = (reference, bytes, checksum = sha256(bytes)) =>
+        request(agent, {
+          method: 'PUT',
+          path: `/api/photos/${reference}/${randomUUID()}`,
+          port: config.port,
+          headers: { ...auth, 'Content-Type': 'image/jpeg', 'X-Photo-Sha256': checksum },
+          body: bytes
+        });
+      const complete = (reference, photosSaved) =>
+        request(agent, {
+          method: 'POST',
+          path: '/api/delivery-sessions/complete',
+          port: config.port,
+          headers: { ...auth, 'Content-Type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ reference, photosSaved }))
+        });
+
+      // What the iPad does for a successful session: every photo comes back
+      // 201 (saved and read back), and only then is the session reported.
+      async function successfulSession(reference, photos) {
+        for (let i = 0; i < photos; i++) assert.equal((await upload(reference, jpeg(`${reference}-${i}`, 2500))).status, 201);
+        assert.equal((await complete(reference, photos)).status, 201);
+      }
+
+      await successfulSession('5698-DELIV', 2);
+      await successfulSession('5698-P-DELIV', 1);
+      await successfulSession('5698-P2-DELIV', 3);
+      assert.equal(listPendingEvents(queueDir).length, 3, 'one tracking event per completed session');
+      assert.equal(countOrdersFiledOn(filedLogDir), 1, 'three sessions of order 5698 are one order');
+
+      await successfulSession('5701-DELIV', 1);
+      assert.equal(countOrdersFiledOn(filedLogDir), 2);
+
+      // A failed session: one photo saved, one rejected - the iPad never
+      // reports it complete, so it creates no event and is not counted.
+      assert.equal((await upload('5702-DELIV', jpeg('5702-ok', 2500))).status, 201);
+      assert.notEqual((await upload('5702-DELIV', jpeg('5702-bad', 2500), sha256(Buffer.from('wrong')))).status, 201);
+      assert.equal(listPendingEvents(queueDir).length, 4);
+      assert.equal(countOrdersFiledOn(filedLogDir), 2);
+
+      assert.equal(fs.readdirSync(nodePath.join(env.share, '5698-P2-DELIV')).length, 3, 'photos really are on the drive');
     });
   } finally {
     env.cleanup();

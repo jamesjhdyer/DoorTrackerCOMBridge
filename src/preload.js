@@ -41,10 +41,14 @@ contextBridge.exposeInMainWorld('deliveryPhotos', {
   testStorage: () => ipcRenderer.invoke('test-delivery-photos-storage'),
   generatePairingCode: () => ipcRenderer.invoke('generate-delivery-photos-pairing-code'),
   revokeDevices: () => ipcRenderer.invoke('revoke-delivery-photos-devices'),
+  getTrackingStatus: () => ipcRenderer.invoke('get-delivery-photos-tracking-status'),
   openPhotographsFolder: () => ipcRenderer.invoke('open-delivery-photographs-folder'),
   openLogsFolder: () => ipcRenderer.invoke('open-delivery-photos-logs-folder'),
 
   onStatus: (callback) => {
     ipcRenderer.on('delivery-photos-status', (event, status) => callback(status));
+  },
+  onSessionFiled: (callback) => {
+    ipcRenderer.on('delivery-photos-session-filed', () => callback());
   }
 });

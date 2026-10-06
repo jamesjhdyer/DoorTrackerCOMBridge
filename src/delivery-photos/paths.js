@@ -30,6 +30,13 @@ const certsDir = () => nodePath.join(homeDir(), 'certs');
 // Paired iPads: only a per-device id and a SHA-256 HASH of its token ever
 // lands here - see auth.js. Never the token itself, never a pairing code.
 const devicesPath = () => nodePath.join(stateDir(), 'paired-devices.json');
+// One JSON file per delivery-photo tracking event still waiting to reach
+// Google Sheets - see tracking.js. Only main.js (which has internet access)
+// ever removes a file from here; this worker process only ever creates one.
+const trackingQueueDir = () => nodePath.join(stateDir(), 'tracking-queue');
+// One small file per workshop day listing every completed delivery session -
+// what "Orders filed today" is counted from. See filed-today.js.
+const filedLogDir = () => nodePath.join(stateDir(), 'filed-sessions');
 
 // Creates the logs folder (this program's OWN folder, never the network
 // share) and returns where it actually ended up. If that folder is
@@ -48,4 +55,4 @@ function ensureLogsDir() {
   }
 }
 
-module.exports = { homeDir, configPath, stateDir, statusPath, lockPath, spoolDir, logsDirPath, certsDir, devicesPath, ensureLogsDir };
+module.exports = { homeDir, configPath, stateDir, statusPath, lockPath, spoolDir, logsDirPath, certsDir, devicesPath, trackingQueueDir, filedLogDir, ensureLogsDir };

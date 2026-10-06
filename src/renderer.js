@@ -897,9 +897,10 @@ const dp = {
   copyAddressBtn: document.getElementById('dp-copy-address-btn'),
   photoRoot: document.getElementById('dp-photo-root'),
   pairedCount: document.getElementById('dp-paired-count'),
-  filedToday: document.getElementById('dp-filed-today'),
-  failedToday: document.getElementById('dp-failed-today'),
+  ordersFiledToday: document.getElementById('dp-orders-filed-today'),
   lastError: document.getElementById('dp-last-error'),
+  trackingPending: document.getElementById('dp-tracking-pending'),
+  trackingSync: document.getElementById('dp-tracking-sync'),
   startBtn: document.getElementById('dp-start-btn'),
   stopBtn: document.getElementById('dp-stop-btn'),
   testStorageBtn: document.getElementById('dp-test-storage-btn'),
@@ -949,8 +950,6 @@ function renderDeliveryPhotosStatus(status) {
   dp.copyAddressBtn.disabled = !(running && status.hostname);
   dp.photoRoot.textContent = status.photoRoot || '-';
   dp.pairedCount.textContent = status.pairedDevices || 0;
-  dp.filedToday.textContent = status.filedToday || 0;
-  dp.failedToday.textContent = status.failedToday || 0;
   dp.lastError.textContent = status.lastError || '-';
 }
 
@@ -1057,6 +1056,31 @@ dp.saveBtn.addEventListener('click', async () => {
 
 window.deliveryPhotos.onStatus((status) => renderDeliveryPhotosStatus(status));
 
+// Google Sheets tracking sync lives entirely in the main process (see
+// main.js's syncPendingTrackingEvents()), not the worker's own status
+// stream, so it gets its own small poll rather than piggybacking on
+// onStatus() above - a few seconds of staleness here is unimportant.
+const TRACKING_STATUS_POLL_MS = 15000;
+
+function formatTrackingSync(tracking) {
+  const syncedAt = tracking.lastSyncAt ? new Date(tracking.lastSyncAt) : null;
+  const erroredAt = tracking.lastSyncErrorAt ? new Date(tracking.lastSyncErrorAt) : null;
+  if (!syncedAt && !erroredAt) return 'Nothing synced yet';
+  // Whichever happened more recently is the one worth showing - an old
+  // success does not need to keep hiding a newer failure, and vice versa.
+  if (erroredAt && (!syncedAt || erroredAt > syncedAt)) {
+    return `Last attempt FAILED ${erroredAt.toLocaleString()} - ${tracking.lastSyncError}`;
+  }
+  return `Last synced ${syncedAt.toLocaleString()}`;
+}
+
+async function refreshTrackingStatus() {
+  const tracking = await window.deliveryPhotos.getTrackingStatus();
+  dp.trackingPending.textContent = tracking.pendingCount;
+  dp.ordersFiledToday.textContent = tracking.ordersFiledToday === null ? '?' : tracking.ordersFiledToday;
+  dp.trackingSync.textContent = formatTrackingSync(tracking);
+}
+
 async function initDeliveryPhotos() {
   const result = await window.deliveryPhotos.getConfig();
   if (result.ok) {
@@ -1066,6 +1090,9 @@ async function initDeliveryPhotos() {
     dp.autoStartInput.checked = result.config.autoStart;
   }
   renderDeliveryPhotosStatus(await window.deliveryPhotos.getStatus());
+  refreshTrackingStatus();
+  setInterval(refreshTrackingStatus, TRACKING_STATUS_POLL_MS);
+  window.deliveryPhotos.onSessionFiled(() => refreshTrackingStatus());
 }
 
 initDeliveryPhotos();
