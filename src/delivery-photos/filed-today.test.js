@@ -90,3 +90,15 @@ test('a corrupted line or an invalid reference does not hide the rest', () => {
     cleanup();
   }
 });
+
+test('the same session id reported twice is only added to the ledger once', () => {
+  const { dir, cleanup } = makeDir();
+  try {
+    const entry = { eventId: '0b9c7a52-6f1e-4c55-9a1d-2f6a3e4b5c6d', reference: '5698-DELIV', savedAt: '2026-10-14T09:00:00.000Z' };
+    assert.equal(recordFiledSession(dir, entry), true);
+    assert.equal(recordFiledSession(dir, { ...entry, savedAt: '2026-10-14T09:05:00.000Z' }), false);
+    assert.equal(fs.readFileSync(nodePath.join(dir, '2026-10-14.jsonl'), 'utf8').trim().split('\n').length, 1);
+  } finally {
+    cleanup();
+  }
+});

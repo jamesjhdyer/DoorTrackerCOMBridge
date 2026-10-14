@@ -38,10 +38,10 @@ making changes to the COM port, printing, or Delivery Photos logic.
 Configured from its own tab in the app (**Delivery Photos**): a local
 hostname (e.g. `door-tracker.local`, advertised via mDNS — bundled in this
 app, nothing extra to install), a port, and the network archive folder (a
-`\\server\share\...` UNC path — a mapped drive letter is refused, since it
-depends on who is logged in). "Start Photo Service" begins listening; the
-panel shows the address to open on the iPad and the counts of photographs
-filed/failed today.
+`\\server\share\...` UNC path or a mapped drive letter such as
+`S:\Delivery Photographs`). "Start Photo Service" begins listening; the
+panel shows the address to open on the iPad, **Orders filed today** and the
+Google Sheet sync status.
 
 The iPad needs its camera to work, which requires a genuine secure (HTTPS)
 context — the app is its own tiny certificate authority for this, and an
@@ -50,12 +50,37 @@ certificate profile Safari offers, then flip the "Full Trust" toggle in
 Settings → General → About → Certificate Trust Settings). Every visit after
 that is a normal, un-scary HTTPS connection.
 
+### Away from the workshop (offline capture)
+
+The iPad tool keeps working with no connection to this PC. Photographs taken
+while the Photo Service cannot be reached are saved on the iPad (in that
+site's own browser storage, IndexedDB) and sent automatically the next time
+the tool is open on the workshop Wi-Fi. A delivery only counts as filed, and
+only gets its Google Sheet row, once every photograph has been verified on
+the company drive.
+
+One-time setup, **on the workshop Wi-Fi**:
+
+1. Open the address shown in the app in Safari and pair the iPad as usual.
+2. Share → **Add to Home Screen**, then open **Delivery Photos** from the
+   Home Screen and pair it once more (a Home Screen app has its own storage,
+   separate from Safari's - use only the Home Screen app from then on).
+3. On its pending screen, "Opens without the workshop PC" should say **yes**.
+
+Pending deliveries are sent only while the tool is open and in the
+foreground (iPadOS does not reliably run web apps in the background).
+Photographs waiting on the iPad can be seen by anyone who can unlock it and
+open the tool, so keep the iPad passcode-locked.
+
 `npm test` runs everything for Delivery Photos too: real forked worker
 processes doing real file I/O, a real generated certificate genuinely
 TLS-handshaked over localhost, a real local HTTPS server handling real photo
 uploads end-to-end, and a real UDP mDNS round-trip (this last one skips
 cleanly rather than failing on a machine/network that does not allow
-multicast — see `src/delivery-photos/mdns.test.js`).
+multicast — see `src/delivery-photos/mdns.test.js`). The offline tests also
+drive the real iPad page in headless Google Chrome
+(`src/delivery-photos/offline-browser.test.js`), skipping cleanly if Chrome is
+not installed.
 
 ## Build the Windows version
 

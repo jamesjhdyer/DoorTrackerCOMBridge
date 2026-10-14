@@ -63,7 +63,7 @@ jobs:
         shell: bash
         run: |
           UNPACKED="dist/win-unpacked/resources/app.asar.unpacked/delivery-photos-web"
-          for f in "index.html" "app.js" "camera.js" "scanner.js" "vendor/zxing/zxing-reader.js" "vendor/zxing/zxing_reader.wasm"; do
+          for f in "index.html" "app.js" "camera.js" "scanner.js" "offline-queue.js" "sw.js" "manifest.webmanifest" "icon-180.png" "icon-512.png" "vendor/zxing/zxing-reader.js" "vendor/zxing/zxing_reader.wasm"; do
             if [ ! -f "$UNPACKED/$f" ]; then
               echo "Missing from the packaged app: delivery-photos-web/$f"
               exit 1

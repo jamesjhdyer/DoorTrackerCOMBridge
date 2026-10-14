@@ -289,6 +289,78 @@ html, body {
 }
 @keyframes spin { to { transform: rotate(360deg); } }
 
+/* ---------------- connection / offline queue ---------------- */
+
+.connection-strip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 8px;
+  font-size: 14px;
+  color: var(--text-dim);
+}
+.conn-dot {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #3a3f46;
+  flex: 0 0 auto;
+}
+.conn-ok .conn-dot { background: var(--ok); }
+.conn-offline .conn-dot { background: var(--warn); }
+
+.pending-banner {
+  width: 100%;
+  padding: 12px 14px;
+  border-radius: 12px;
+  border: 1px solid var(--warn);
+  background: #3a2a1a;
+  color: var(--warn);
+  font-size: 16px;
+  font-weight: 600;
+  text-align: center;
+  cursor: pointer;
+}
+.inline-link { padding: 0 4px; font-size: inherit; text-decoration: underline; }
+
+.pending-title { margin: 6px 0 0; font-size: 24px; }
+.pending-list {
+  list-style: none;
+  margin: 0;
+  padding: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.pending-item {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.pending-item-ref { font-size: 20px; font-weight: 800; }
+.pending-item-meta { color: var(--text-dim); font-size: 15px; }
+.pending-item-status { font-size: 15px; font-weight: 600; color: var(--warn); }
+.pending-item-status.status-sending { color: var(--accent); }
+.pending-item-error { font-size: 14px; color: var(--danger); }
+.pending-item-actions { display: flex; gap: 8px; justify-content: flex-end; }
+.pending-item-actions button { padding: 8px 14px; font-size: 15px; }
+
+.storage-panel {
+  background: var(--panel);
+  border: 1px solid var(--panel-border);
+  border-radius: 14px;
+  padding: 14px 16px;
+  font-size: 15px;
+  color: var(--text-dim);
+}
+.storage-panel h3 { margin: 0 0 8px; font-size: 16px; color: var(--text); }
+.storage-panel p { margin: 6px 0; }
+.storage-note { font-size: 13px; }
+
 /* ---------------- wide / landscape layouts ---------------- */
 
 @media (min-width: 700px) {

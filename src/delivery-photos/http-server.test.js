@@ -883,3 +883,82 @@ test('end to end: saved photos then session-complete feed the queue and "Orders 
     env.cleanup();
   }
 });
+
+// ---- Offline support: idempotent session completion, app shell ------------
+
+test('reporting the same session twice (an iPad retry) creates one tracking event, one ledger line', async () => {
+  const { countOrdersFiledOn } = require('./filed-today');
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, queueDir, filedLogDir }) => {
+      const sessionId = randomUUID();
+      const complete = () =>
+        request(agent, {
+          method: 'POST',
+          path: '/api/delivery-sessions/complete',
+          port: config.port,
+          headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ sessionId, reference: '5698-DELIV', photosSaved: 2 }))
+        });
+      const first = await complete();
+      assert.equal(first.status, 201);
+      assert.equal(JSON.parse(first.body.toString('utf8')).eventId, sessionId);
+      const second = await complete();
+      assert.equal(second.status, 200);
+      assert.equal(JSON.parse(second.body.toString('utf8')).duplicate, true);
+
+      const pending = listPendingEvents(queueDir);
+      assert.equal(pending.length, 1);
+      assert.equal(pending[0].eventId, sessionId);
+      assert.equal(fs.readFileSync(nodePath.join(filedLogDir, fs.readdirSync(filedLogDir)[0]), 'utf8').trim().split('\n').length, 1);
+      assert.equal(countOrdersFiledOn(filedLogDir), 1);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('a malformed session id is refused and nothing is queued', async () => {
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent, token, queueDir }) => {
+      const res = await request(agent, {
+        method: 'POST',
+        path: '/api/delivery-sessions/complete',
+        port: config.port,
+        headers: { Authorization: `Bearer ${token}`, 'Content-Type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ sessionId: '../escape', reference: '5698-DELIV', photosSaved: 1 }))
+      });
+      assert.equal(res.status, 400);
+      assert.deepEqual(listPendingEvents(queueDir), []);
+    });
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('serves the offline Service Worker (versioned, never cached), the manifest and the icons', async () => {
+  const { shellVersion } = require('./web-shell');
+  const env = makeEnv();
+  try {
+    await withServer(env, {}, async ({ config, agent }) => {
+      const sw = await request(agent, { method: 'GET', path: '/sw.js', port: config.port });
+      assert.equal(sw.status, 200);
+      assert.match(sw.headers['content-type'], /javascript/);
+      assert.equal(sw.headers['cache-control'], 'no-store');
+      assert.match(sw.body.toString('utf8'), new RegExp(shellVersion()));
+
+      const manifest = await request(agent, { method: 'GET', path: '/manifest.webmanifest', port: config.port });
+      assert.equal(manifest.status, 200);
+      assert.match(manifest.headers['content-type'], /application\/manifest\+json/);
+
+      for (const icon of ['/icon-180.png', '/icon-512.png']) {
+        const res = await request(agent, { method: 'GET', path: icon, port: config.port });
+        assert.equal(res.status, 200, icon);
+        assert.equal(res.headers['content-type'], 'image/png');
+      }
+    });
+  } finally {
+    env.cleanup();
+  }
+});

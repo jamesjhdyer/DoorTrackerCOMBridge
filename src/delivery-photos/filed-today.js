@@ -37,11 +37,22 @@ function dayFilePath(dir, dateKey) {
 
 // Appends one completed session to the ledger for the workshop date of its
 // own `savedAt`. A single appendFileSync of one short line - this worker is
-// the only writer, and main.js only ever reads.
+// the only writer, and main.js only ever reads. A session already in that
+// day's ledger (the iPad re-reporting the same session id) is not added
+// twice. Returns true if a line was added.
 function recordFiledSession(dir, { eventId, reference, savedAt }) {
   fs.mkdirSync(dir, { recursive: true });
+  const filePath = dayFilePath(dir, workshopDateKey(savedAt));
+  let existing = '';
+  try {
+    existing = fs.readFileSync(filePath, 'utf8');
+  } catch (err) {
+    if (err.code !== 'ENOENT') throw err;
+  }
+  if (eventId && existing.includes(`"eventId":${JSON.stringify(eventId)}`)) return false;
   const line = JSON.stringify({ eventId, reference, savedAt });
-  fs.appendFileSync(dayFilePath(dir, workshopDateKey(savedAt)), `${line}\n`, 'utf8');
+  fs.appendFileSync(filePath, `${line}\n`, 'utf8');
+  return true;
 }
 
 // The number of UNIQUE order numbers filed on the workshop date of `now` -

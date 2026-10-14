@@ -5,6 +5,13 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, user-scalable=no" />
 <title>Delivery Photos</title>
 <link rel="icon" href="data:," />
+<link rel="manifest" href="/manifest.webmanifest" />
+<link rel="apple-touch-icon" href="/icon-180.png" />
+<meta name="apple-mobile-web-app-capable" content="yes" />
+<meta name="mobile-web-app-capable" content="yes" />
+<meta name="apple-mobile-web-app-title" content="Delivery Photos" />
+<meta name="apple-mobile-web-app-status-bar-style" content="black" />
+<meta name="theme-color" content="#0b0d10" />
 <link rel="stylesheet" href="style.css" />
 </head>
 <body>
@@ -12,6 +19,13 @@
 <!-- ============================ PAIRING ============================ -->
 <section id="pairing-screen" class="screen" hidden>
   <h1 class="brand">DELIVERY PHOTOS</h1>
+
+  <div class="connection-strip" data-connection-strip>
+    <span class="conn-dot" data-conn-dot></span>
+    <span data-conn-text>Checking the workshop Photo Service…</span>
+  </div>
+  <button type="button" class="pending-banner" data-pending-banner hidden></button>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
   <p class="scan-instruction">This iPad needs to be paired with the PC once before it can upload photos.</p>
 
   <form id="pairing-form" class="manual-entry-form">
@@ -21,11 +35,19 @@
   </form>
   <p id="pairing-error" class="warning" hidden></p>
   <p id="pairing-busy" class="scan-instruction" hidden>Pairing…</p>
+  <button type="button" id="pairing-skip-button" class="link-button">Away from the workshop? Take photos now and send them after pairing</button>
 </section>
 
 <!-- ============================= SCAN ============================= -->
 <section id="scan-screen" class="screen" hidden>
   <h1 class="brand">DELIVERY PHOTOS</h1>
+
+  <div class="connection-strip" data-connection-strip>
+    <span class="conn-dot" data-conn-dot></span>
+    <span data-conn-text>Checking the workshop Photo Service…</span>
+  </div>
+  <button type="button" class="pending-banner" data-pending-banner hidden></button>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
   <p class="scan-instruction" id="scan-message">Point the camera at the delivery note code.</p>
 
   <div class="camera-frame">
@@ -84,8 +106,34 @@
     <h2 id="result-heading">Saved</h2>
     <div id="result-reference" class="result-reference">5698-DELIV</div>
     <p id="result-detail" class="result-detail">Safe to continue.</p>
-    <button type="button" id="retry-button" class="primary-button" hidden>RETRY FAILED PHOTOS</button>
+    <p id="result-warning" class="warning" hidden></p>
+    <button type="button" id="retry-button" class="primary-button" hidden>SEND NOW</button>
     <button type="button" id="scan-next-button" class="primary-button">SCAN NEXT DELIVERY</button>
+  </div>
+</section>
+
+<!-- ============================ PENDING ============================ -->
+<section id="pending-screen" class="screen" hidden>
+  <header class="capture-header">
+    <h2 class="pending-title">Pending deliveries</h2>
+    <button type="button" id="pending-back-button" class="link-button">Back</button>
+  </header>
+  <div class="connection-strip" data-connection-strip>
+    <span class="conn-dot" data-conn-dot></span>
+    <span data-conn-text>Checking the workshop Photo Service…</span>
+  </div>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
+  <p id="pending-summary" class="scan-instruction"></p>
+  <button type="button" id="send-pending-button" class="primary-button">SEND PENDING NOW</button>
+  <ul id="pending-list" class="pending-list"></ul>
+
+  <div class="storage-panel">
+    <h3>Offline storage on this iPad</h3>
+    <p id="storage-usage">Checking…</p>
+    <p id="storage-persistence"></p>
+    <p id="storage-offline-app"></p>
+    <p id="storage-warning" class="warning" hidden></p>
+    <p class="storage-note">Photographs waiting here are only on this iPad until they are sent. Anyone who can unlock this iPad and open this tool could see them, so keep the iPad locked with a passcode.</p>
   </div>
 </section>
 
@@ -101,6 +149,7 @@
 <script src="reference.js"></script>
 <script src="camera.js"></script>
 <script src="scanner.js"></script>
+<script src="offline-queue.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -184,3 +184,32 @@ test('Saved Date/Time reflects when the event was created (i.e. when the session
     env.cleanup();
   }
 });
+
+test('an iPad session id becomes the event id, and reporting it again does not create a second event', () => {
+  const env = makeEnv();
+  try {
+    const sessionId = '0b9c7a52-6f1e-4c55-9a1d-2f6a3e4b5c6d';
+    const first = createTrackingEvent({ reference: '5698-DELIV', photosSaved: 3, eventId: sessionId }, { queueDir: queueDir(env) });
+    assert.equal(first.eventId, sessionId);
+    assert.equal(first.duplicate, undefined);
+
+    const again = createTrackingEvent({ reference: '5698-DELIV', photosSaved: 3, eventId: sessionId }, { queueDir: queueDir(env) });
+    assert.equal(again.duplicate, true);
+    assert.equal(again.savedAt, first.savedAt, 'the original event is returned untouched');
+    assert.equal(listPendingEvents(queueDir(env)).length, 1);
+  } finally {
+    env.cleanup();
+  }
+});
+
+test('a malformed session id is refused (it becomes a file name, so only a plain UUID is accepted)', () => {
+  const env = makeEnv();
+  try {
+    for (const eventId of ['../../evil', 'ABCDEF', '', null, '0B9C7A52-6F1E-4C55-9A1D-2F6A3E4B5C6D']) {
+      assert.throws(() => createTrackingEvent({ reference: '5698-DELIV', photosSaved: 1, eventId }, { queueDir: queueDir(env) }), TrackingError, String(eventId));
+    }
+    assert.deepEqual(listPendingEvents(queueDir(env)), []);
+  } finally {
+    env.cleanup();
+  }
+});

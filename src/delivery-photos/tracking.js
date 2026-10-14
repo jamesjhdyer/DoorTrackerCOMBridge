@@ -43,6 +43,8 @@ function eventFilePath(queueDir, eventId) {
   return nodePath.join(queueDir, `${eventId}.json`);
 }
 
+const EVENT_ID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+
 function writeEventFile(queueDir, eventId, record) {
   fs.mkdirSync(queueDir, { recursive: true });
   const finalPath = eventFilePath(queueDir, eventId);
@@ -57,13 +59,30 @@ function writeEventFile(queueDir, eventId, record) {
 // form (http-server.js parses it before calling this). Throws TrackingError
 // if `photosSaved` is not a real positive count - a session with nothing
 // successfully saved is not a trackable event at all.
-function createTrackingEvent({ reference, photosSaved }, { queueDir, now = () => new Date() }) {
+//
+// `eventId` (optional) is the iPad's own session id. When given, reporting
+// the same session again (the iPad retrying after its first report's answer
+// was lost) never creates a second event: if that event is still queued here
+// it is returned as-is with `duplicate: true`; if it was already synced, the
+// re-created event carries the same id, which the website's Event ID dedupe
+// then recognises, so the Sheet still gets exactly one row.
+function createTrackingEvent({ reference, photosSaved, eventId: requestedId }, { queueDir, now = () => new Date() }) {
   const parsed = parseReference(reference);
   if (!parsed.ok) throw new TrackingError(`cannot track an invalid delivery reference: ${parsed.reason}`);
   if (!Number.isInteger(photosSaved) || photosSaved < 1) throw new TrackingError('photosSaved must be a positive whole number');
+  if (requestedId !== undefined && !EVENT_ID_PATTERN.test(String(requestedId))) throw new TrackingError('sessionId must be a lower-case UUID');
+
+  if (requestedId) {
+    try {
+      const existing = JSON.parse(fs.readFileSync(eventFilePath(queueDir, requestedId), 'utf8'));
+      if (existing && existing.eventId === requestedId) return { ...existing, duplicate: true };
+    } catch {
+      // not queued (never seen, or already synced) - create it below
+    }
+  }
 
   const { deliveryType, partNo } = deliveryTypeAndPartNo(parsed);
-  const eventId = randomUUID();
+  const eventId = requestedId || randomUUID();
   const savedAt = now().toISOString();
 
   const record = {

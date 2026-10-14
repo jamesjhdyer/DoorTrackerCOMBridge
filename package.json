@@ -22,7 +22,9 @@
   "devDependencies": {
     "electron": "^31.0.0",
     "electron-builder": "^25.1.8",
-    "multicast-dns": "^7.2.5"
+    "fake-indexeddb": "^6.2.5",
+    "multicast-dns": "^7.2.5",
+    "playwright-core": "^1.64.0"
   },
   "build": {
     "appId": "com.doortracker.combridge",

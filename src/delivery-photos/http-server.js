@@ -25,6 +25,7 @@ const { parse: parseReference } = require('./reference');
 const { buildTrustProfileMobileConfig } = require('./certs');
 const { createTrackingEvent, TrackingError } = require('./tracking');
 const { recordFiledSession } = require('./filed-today');
+const { serviceWorkerSource } = require('./web-shell');
 
 const STATIC_ROOT = nodePath.join(__dirname, '..', '..', 'delivery-photos-web');
 const UUID_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
@@ -37,7 +38,8 @@ const CONTENT_TYPES = {
   '.wasm': 'application/wasm',
   '.json': 'application/json; charset=utf-8',
   '.ico': 'image/x-icon',
-  '.png': 'image/png'
+  '.png': 'image/png',
+  '.webmanifest': 'application/manifest+json; charset=utf-8'
 };
 
 // `closeAfter: true` marks a response sent WITHOUT the request body having
@@ -267,7 +269,7 @@ function handlePairCheck(req, res, deps) {
   return sendJson(res, 200, { paired: auth.ok });
 }
 
-// POST /api/delivery-sessions/complete { reference, photosSaved } - called
+// POST /api/delivery-sessions/complete { reference, photosSaved, sessionId? } - called
 // by the iPad ONLY once every photograph in that delivery's batch already
 // came back 201 from PUT /api/photos/... (checksum-verified, read back off
 // the drive - see http-server.js's handleUpload). This endpoint does not
@@ -277,6 +279,10 @@ function handlePairCheck(req, res, deps) {
 // cannot upload photos must not be able to manufacture a tracking event
 // either. Answers immediately once the event is durably queued locally -
 // never waits on the internet (see tracking.js's own header comment for why).
+// `sessionId` (sent by every current iPad, online or from its offline queue)
+// becomes the tracking Event ID, so reporting the same session twice - a
+// retry after a lost answer - is acknowledged without creating a second
+// event or a second Sheet row (see tracking.js's createTrackingEvent).
 async function handleSessionComplete(req, res, deps) {
   const { pairing, logger, queueDir, filedLogDir } = deps;
   const ip = clientIp(req);
@@ -296,7 +302,11 @@ async function handleSessionComplete(req, res, deps) {
   }
 
   try {
-    const record = createTrackingEvent({ reference: body.reference, photosSaved: Number(body.photosSaved) }, { queueDir });
+    const record = createTrackingEvent({ reference: body.reference, photosSaved: Number(body.photosSaved), eventId: body.sessionId ?? undefined }, { queueDir });
+    if (record.duplicate) {
+      logger.info(`Session ${record.eventId} (${record.reference}) reported complete again from ${ip} - already recorded, not duplicated.`);
+      return sendJson(res, 200, { ok: true, eventId: record.eventId, duplicate: true });
+    }
     logger.info(`Tracking event created: ${record.eventId} (${record.reference}, ${record.photosSaved} photo${record.photosSaved === 1 ? '' : 's'}) from ${ip}.`);
     // The local "Orders filed today" ledger (see filed-today.js). A display
     // figure only - failing to write it must never fail a delivery whose
@@ -357,6 +367,18 @@ function router(req, res, deps) {
   // quietly drift apart. This is the one exception to STATIC_ROOT below.
   if (req.method === 'GET' && url.pathname === '/reference.js') {
     const data = fs.readFileSync(nodePath.join(__dirname, 'reference.js'));
+    res.writeHead(200, { 'Content-Type': CONTENT_TYPES['.js'], 'Content-Length': data.length, 'Cache-Control': 'no-store' });
+    res.end(data);
+    return;
+  }
+
+  // The iPad's offline Service Worker, stamped with the current app shell's
+  // version and file list (see web-shell.js). Served at the site root so its
+  // scope covers the whole tool, and never cached by the browser's ordinary
+  // HTTP cache, so a new Windows build is noticed the next time the iPad
+  // opens the tool on the workshop network.
+  if (req.method === 'GET' && url.pathname === '/sw.js') {
+    const data = Buffer.from(serviceWorkerSource(), 'utf8');
     res.writeHead(200, { 'Content-Type': CONTENT_TYPES['.js'], 'Content-Length': data.length, 'Cache-Control': 'no-store' });
     res.end(data);
     return;
