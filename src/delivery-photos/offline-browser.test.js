@@ -210,6 +210,49 @@ async function dataMatrixPng(text) {
   return Buffer.from(await result.image.arrayBuffer()).toString('base64');
 }
 
+// Waits until the camera preview has shown a NEW frame since the last call,
+// as a person pressing the shutter repeatedly would see the picture move.
+// Without this, two quick presses can capture the very same video frame -
+// byte-identical JPEGs, which the PC (correctly) treats as one photograph
+// sent twice and files once. Chrome's fake camera on a slow Windows CI
+// runner did exactly that. Fails with a clear message if the camera has
+// stopped producing frames at all.
+async function nextCameraFrame(page) {
+  const ok = await page.evaluate(
+    () =>
+      new Promise((resolve) => {
+        const video = document.getElementById('capture-video');
+        const timer = setTimeout(() => resolve(false), 15000);
+        video.requestVideoFrameCallback(() => {
+          clearTimeout(timer);
+          resolve(true);
+        });
+      })
+  );
+  assert.ok(ok, 'the camera preview produced no new frame within 15 seconds');
+}
+
+async function pressShutter(page, alreadyTaken) {
+  await nextCameraFrame(page);
+  await page.click('#shutter-button');
+  await page.waitForFunction((n) => document.querySelectorAll('#thumbnails .thumb').length === n, alreadyTaken + 1);
+}
+
+// Every photo queued in one session on the page must be a different image -
+// otherwise the drive would (rightly) end up with fewer files than photos,
+// and a later "files on the drive" wait would fail for a reason that has
+// nothing to do with sending.
+async function assertQueuedPhotosDistinct(page) {
+  const sessions = await page.evaluate(async () => {
+    const store = await DeliveryOfflineQueue.openStore({ indexedDB });
+    const out = [];
+    for (const q of await store.listSessions()) out.push({ code: q.code, hashes: (await store.getPhotos(q.sessionId)).map((p) => p.sha256) });
+    store.close();
+    return out;
+  });
+  for (const q of sessions) assert.equal(new Set(q.hashes).size, q.hashes.length, `the queued ${q.code} photos are not all different images: ${q.hashes.join(', ')}`);
+}
+
 async function captureDelivery(page, code, photos) {
   await page.click('#manual-entry-button');
   await page.fill('#manual-entry-input', code);
@@ -217,10 +260,7 @@ async function captureDelivery(page, code, photos) {
   await page.waitForSelector('#capture-screen:not([hidden])');
   // As a person would: the shutter is pressed once the live picture is showing.
   await page.waitForFunction(() => document.getElementById('capture-video').videoWidth > 0);
-  for (let i = 1; i <= photos; i++) {
-    await page.click('#shutter-button');
-    await page.waitForFunction((n) => document.querySelectorAll('#thumbnails .thumb').length === n, i);
-  }
+  for (let i = 0; i < photos; i++) await pressShutter(page, i);
   await page.click('#done-button');
   await page.waitForSelector('#result-screen:not([hidden])', { timeout: 30000 });
   return page.textContent('#result-heading');
@@ -248,8 +288,16 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     handle = startServers({ config, credentials, runWorker: runInWorker, logger, spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
     await handle.listen();
   };
+  // The PC switched off: no new connections AND none of the browser's
+  // already-open keep-alive connections answer any more. (server.close()
+  // alone keeps serving those until they go idle - about 25 seconds with
+  // the page checking in every 20 - so "offline" would not really be
+  // offline yet.)
   const stopService = async () => {
-    await handle.close();
+    const closing = handle.close();
+    handle.httpsServer.closeAllConnections();
+    handle.httpServer.closeAllConnections();
+    await closing;
     handle = null;
   };
   const origin = `https://localhost:${PORT}`;
@@ -353,6 +401,7 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     const offlineHeading = await page.textContent('#result-heading');
     assert.equal(offlineHeading, 'Saved on this iPad');
     assert.match(await page.textContent('#result-detail'), /Waiting to send to company drive/);
+    await assertQueuedPhotosDistinct(page);
     let queued = await queuedOnPage(page);
     assert.equal(queued.length, 1);
     assert.deepEqual([queued[0].role, queued[0].code, queued[0].baseOrder, queued[0].reference, queued[0].orderNumber, queued[0].deliveryType, queued[0].partNo, queued[0].photoCount], ['delivery', '5698-P2-DELIV', '5698', '5698-P2-DELIV', '5698', 'Part Delivery', 2, 3]);
@@ -432,8 +481,16 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     handle = startServers({ config, credentials, runWorker: runInWorker, logger, spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
     await handle.listen();
   };
+  // The PC switched off: no new connections AND none of the browser's
+  // already-open keep-alive connections answer any more. (server.close()
+  // alone keeps serving those until they go idle - about 25 seconds with
+  // the page checking in every 20 - so "offline" would not really be
+  // offline yet.)
   const stopService = async () => {
-    await handle.close();
+    const closing = handle.close();
+    handle.httpsServer.closeAllConnections();
+    handle.httpServer.closeAllConnections();
+    await closing;
     handle = null;
   };
   const origin = `https://localhost:${port}`;
@@ -466,10 +523,7 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     await page.waitForSelector('#capture-screen:not([hidden])');
     const header = { role: await page.textContent('#capture-role'), label: await page.textContent('#reference-label'), sub: await page.textContent('#reference-sub') };
     await page.waitForFunction(() => document.getElementById('capture-video').videoWidth > 0);
-    for (let i = 1; i <= photos; i++) {
-      await page.click('#shutter-button');
-      await page.waitForFunction((n) => document.querySelectorAll('#thumbnails .thumb').length === n, i);
-    }
+    for (let i = 0; i < photos; i++) await pressShutter(page, i);
     await page.click('#done-button');
     await page.waitForSelector('#result-screen:not([hidden])', { timeout: 30000 });
     return { heading: await page.textContent('#result-heading'), header };
@@ -517,6 +571,8 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     assert.equal(await bench.page.textContent('#scan-screen [data-role-heading]'), 'BENCH PHOTOS', 'the role is remembered away from the workshop');
     assert.equal((await capture(bench.page, '5698-F-02', 4)).heading, 'Saved on this iPad');
     assert.equal((await capture(irn.page, '5626-2', 3)).heading, 'Saved on this iPad');
+    await assertQueuedPhotosDistinct(bench.page);
+    await assertQueuedPhotosDistinct(irn.page);
 
     await bench.page.click('#scan-next-button');
     await bench.page.click('#scan-screen [data-pending-banner]');
