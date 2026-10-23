@@ -14,13 +14,14 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 const fs = require('node:fs');
+const https = require('node:https');
 const nodePath = require('node:path');
 const { X509Certificate, createHash } = require('node:crypto');
 
 const { startServers } = require('./http-server');
 const { ensureCertificates } = require('./certs');
 const { runInWorker } = require('./worker-runner');
-const { makeEnv, quietLogger } = require('./helpers');
+const { makeEnv } = require('./helpers');
 const { PairingManager } = require('./auth');
 const { ConcurrencyLimiter } = require('./concurrency');
 const { listPendingEvents } = require('./tracking');
@@ -47,14 +48,159 @@ async function launchChrome(spki) {
   }
 }
 
-async function waitFor(fn, { timeoutMs = 30000, message = 'condition' } = {}) {
+// `diagnose` (optional) is called once on a timeout, and whatever it returns
+// is put in the failure message - so a failure on a CI machine nobody can
+// watch still says WHY, not just that it timed out.
+async function waitFor(fn, { timeoutMs = 30000, message = 'condition', diagnose } = {}) {
   const deadline = Date.now() + timeoutMs;
   for (;;) {
     const value = await fn();
     if (value) return value;
-    if (Date.now() > deadline) throw new Error(`Timed out waiting for ${message}`);
+    if (Date.now() > deadline) {
+      let detail = '';
+      if (diagnose) {
+        try {
+          detail = `\n${await diagnose()}`;
+        } catch (err) {
+          detail = `\n(diagnostics themselves failed: ${err && err.stack})`;
+        }
+      }
+      throw new Error(`Timed out waiting for ${message}${detail}`);
+    }
     await new Promise((resolve) => setTimeout(resolve, 200));
   }
+}
+
+// ---- Diagnostics for the end-to-end steps ------------------------------------
+
+const stamp = () => new Date().toISOString().slice(11, 23);
+
+// The server's own log, kept (with times) instead of discarded: it records
+// every upload accepted or refused and why, every archive success ("Filed
+// ...") or failure ("Could not file ..."), and every session-complete report.
+function recordingLogger() {
+  const lines = [];
+  const push = (level) => (message) => lines.push(`${stamp()} ${level} ${message}`);
+  return { info: push('INFO'), warn: push('WARN'), error: push('ERROR'), lines };
+}
+
+// Every Photo Service request the page makes - sent, answered (with status)
+// or failed (with the browser's reason) - plus page errors and warnings.
+function watchPage(page, name, log) {
+  const apiPath = (request) => {
+    const url = new URL(request.url());
+    return url.pathname.startsWith('/api/') ? url.pathname : null;
+  };
+  page.on('request', (r) => {
+    const path = apiPath(r);
+    if (path) log.push(`${stamp()} [${name}] -> ${r.method()} ${path}`);
+  });
+  page.on('requestfinished', async (r) => {
+    const path = apiPath(r);
+    if (!path) return;
+    const response = await r.response().catch(() => null);
+    log.push(`${stamp()} [${name}] <- ${response ? response.status() : 'no response'} ${r.method()} ${path}`);
+  });
+  page.on('requestfailed', (r) => {
+    const path = apiPath(r);
+    if (path) log.push(`${stamp()} [${name}] xx FAILED ${r.method()} ${path}: ${r.failure() && r.failure().errorText}`);
+  });
+  page.on('console', (m) => {
+    if (m.type() === 'error' || m.type() === 'warning') log.push(`${stamp()} [${name}] console.${m.type()}: ${m.text()}`);
+  });
+  page.on('pageerror', (err) => log.push(`${stamp()} [${name}] page error: ${err.message}`));
+}
+
+// What one iPad page believes: which screen, visible/focused or not, its
+// connection strip, its pending list, and every queued session in its
+// IndexedDB with each photo's sent/not-sent state. The pairing token itself
+// is checked against the PC's pairing records here and never printed.
+async function pageState(page, pairing) {
+  const s = await page.evaluate(async () => {
+    const visibleScreen = [...document.querySelectorAll('section.screen')].find((el) => !el.hidden);
+    const out = {
+      url: location.href,
+      visibility: document.visibilityState,
+      hasFocus: document.hasFocus(),
+      screen: visibleScreen ? visibleScreen.id : '(none)',
+      connection: visibleScreen && visibleScreen.querySelector('[data-conn-text]') ? visibleScreen.querySelector('[data-conn-text]').textContent : '(no strip on this screen)',
+      pendingSummary: document.getElementById('pending-summary').textContent,
+      serviceWorkerControlling: Boolean(navigator.serviceWorker && navigator.serviceWorker.controller),
+      storedRole: localStorage.getItem('deliveryPhotosRole'),
+      token: localStorage.getItem('deliveryPhotosToken') || '',
+      queued: []
+    };
+    try {
+      const store = await DeliveryOfflineQueue.openStore({ indexedDB });
+      for (const q of await store.listSessions()) {
+        const photos = await store.getPhotos(q.sessionId);
+        out.queued.push({
+          role: q.role,
+          code: q.code,
+          baseOrder: q.baseOrder,
+          status: q.status,
+          attempts: q.attempts,
+          lastAttemptAt: q.lastAttemptAt,
+          lastError: q.lastError,
+          photos: photos.map((p) => (p.uploaded ? 'sent' : `waiting(${p.bytes ? p.bytes.byteLength : 0} bytes)`)).join(', ')
+        });
+      }
+      store.close();
+    } catch (err) {
+      out.queued = `could not read the offline queue: ${err.message}`;
+    }
+    return out;
+  });
+  const auth = s.token ? pairing.verify(s.token) : { ok: false };
+  delete s.token;
+  s.pairing = auth.ok ? `valid (paired as ${auth.role})` : 'NOT valid on the PC (no token, or unknown/revoked)';
+  return s;
+}
+
+// Asks the Photo Service directly (from the test, not the page) whether it answers.
+function serviceAnswers(origin, caCert) {
+  return new Promise((resolve) => {
+    const req = https.get(`${origin}/api/health`, { ca: caCert, timeout: 3000 }, (res) => {
+      res.resume();
+      resolve(`answers (HTTP ${res.statusCode})`);
+    });
+    req.on('timeout', () => req.destroy(new Error('no answer within 3s')));
+    req.on('error', (err) => resolve(`DOES NOT answer: ${err.message}`));
+  });
+}
+
+function folderState(share, folders) {
+  const lines = [];
+  try {
+    lines.push(`drive root: ${JSON.stringify(fs.readdirSync(share).sort())}`);
+  } catch (err) {
+    lines.push(`drive root unreadable: ${err.message}`);
+  }
+  for (const folder of folders) {
+    try {
+      lines.push(`${folder}: ${JSON.stringify(fs.readdirSync(nodePath.join(share, folder)).sort())}`);
+    } catch (err) {
+      lines.push(`${folder}: ${err.code === 'ENOENT' ? 'folder does not exist' : err.message}`);
+    }
+  }
+  return lines.join('\n  ');
+}
+
+// Everything above in one report, for a waitFor() timeout.
+function diagnostics({ pages, pairing, origin, caCert, share, folders, logger, browserLog }) {
+  return async () => {
+    const parts = [`--- diagnostics at ${stamp()} ---`, `Photo Service, asked directly: ${await serviceAnswers(origin, caCert)}`, `Company drive (test folder):\n  ${folderState(share, folders)}`];
+    for (const [name, page] of Object.entries(pages)) {
+      try {
+        parts.push(`iPad "${name}": ${JSON.stringify(await pageState(page, pairing), null, 2)}`);
+      } catch (err) {
+        parts.push(`iPad "${name}": could not read its state: ${err.message}`);
+      }
+    }
+    parts.push(`Requests the iPads made to the Photo Service (-> sent, <- answered, xx failed):\n  ${browserLog.join('\n  ') || '(none)'}`);
+    parts.push(`Photo Service log (uploads accepted/refused, archive results, session-complete reports):\n  ${logger.lines.join('\n  ') || '(empty)'}`);
+    return parts.join('\n');
+  };
 }
 
 async function dataMatrixPng(text) {
@@ -95,9 +241,11 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
   const pairing = new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
   const queueDir = nodePath.join(env.home, 'tracking-queue');
   const filedLogDir = nodePath.join(env.home, 'filed-sessions');
+  const logger = recordingLogger();
+  const browserLog = [];
   let handle = null;
   const startService = async () => {
-    handle = startServers({ config, credentials, runWorker: runInWorker, logger: quietLogger(), spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
+    handle = startServers({ config, credentials, runWorker: runInWorker, logger, spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
     await handle.listen();
   };
   const stopService = async () => {
@@ -126,6 +274,8 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     await startService();
     const context = await browser.newContext();
     const page = await context.newPage();
+    watchPage(page, 'delivery', browserLog);
+    const diagnose = diagnostics({ pages: { delivery: page }, pairing, origin, caCert: credentials.caCert, share: env.share, folders: ['5701', '5698'], logger, browserLog });
     const requests = [];
     page.on('request', (r) => requests.push(r.url()));
 
@@ -237,9 +387,9 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     // ---- 5. Back on the workshop Wi-Fi: coming back to the foreground sends it.
     await startService();
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => files('5698').length === 3, { message: 'the queued photos to reach the drive' });
+    await waitFor(() => files('5698').length === 3, { message: 'the queued photos to reach the drive', diagnose });
     assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-DELIV.jpg', '003-DELIV.jpg']);
-    await waitFor(async () => (await queuedOnPage(page)).length === 0, { message: 'the local copy to be removed' });
+    await waitFor(async () => (await queuedOnPage(page)).length === 0, { message: 'the local copy to be removed', diagnose });
     const events = listPendingEvents(queueDir);
     assert.equal(events.length, 2);
     const event = events.find((e) => e.reference === '5698-P2-DELIV');
@@ -275,9 +425,11 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
   const pairing = new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
   const queueDir = nodePath.join(env.home, 'tracking-queue');
   const filedLogDir = nodePath.join(env.home, 'filed-sessions');
+  const logger = recordingLogger();
+  const browserLog = [];
   let handle = null;
   const startService = async () => {
-    handle = startServers({ config, credentials, runWorker: runInWorker, logger: quietLogger(), spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
+    handle = startServers({ config, credentials, runWorker: runInWorker, logger, spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
     await handle.listen();
   };
   const stopService = async () => {
@@ -296,6 +448,7 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
   async function pairedPage(role) {
     const context = await browser.newContext();
     const page = await context.newPage();
+    watchPage(page, role, browserLog);
     await page.goto(`${origin}/`);
     await page.waitForSelector('#pairing-screen:not([hidden])');
     assert.equal(await page.isVisible('#pairing-skip-button'), false, 'a never-paired iPad has no role to take photos as yet');
@@ -384,7 +537,10 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     // ---- Back on the workshop Wi-Fi: each sends, under the role the PC holds for it.
     await startService();
     for (const p of [bench.page, irn.page]) await p.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => files('5698').length === 7 && files('5626-2').length === 4, { message: 'the queued photos to reach the drive' });
+    const diagnose = diagnostics({ pages: { bench: bench.page, ironmongery: irn.page }, pairing, origin, caCert: credentials.caCert, share: env.share, folders: ['5698', '5626-2'], logger, browserLog });
+    // Each iPad separately, so a failure says which one did not send.
+    await waitFor(() => files('5698').length >= 7, { message: 'the Bench iPad\'s queued photos to reach folder 5698', diagnose });
+    await waitFor(() => files('5626-2').length >= 4, { message: 'the Ironmongery iPad\'s queued photos to reach folder 5626-2', diagnose });
     assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-BENCH.jpg', '003-BENCH.jpg', '004-BENCH.jpg', '005-BENCH.jpg', '006-BENCH.jpg', '007-BENCH.jpg']);
     assert.deepEqual(files('5626-2'), ['001-IRN.jpg', '002-IRN.jpg', '003-IRN.jpg', '004-IRN.jpg']);
     for (const p of [bench.page, irn.page]) await p.waitForFunction(() => /Nothing waiting/.test(document.querySelector('#pending-summary').textContent), null, { timeout: 30000 });
