@@ -80,20 +80,55 @@ error rather than the app crashing) and status reports something specific,
 for example "Network drive unavailable — waiting for S:"; once the drive
 reconnects, the next probe picks it up automatically, no restart needed.
 
+## Photo roles
+
+Each paired iPad has ONE role - `delivery`, `bench` or `ironmongery` - chosen
+on the PC when its pairing code is generated (`auth.js`) and stored with the
+hash of its token in `state/paired-devices.json`. The server only ever takes
+the role from `pairing.verify(token)`; the iPad never sends one that is
+trusted. `photo-roles.js` (shared verbatim by server and iPad, like
+`reference.js`) holds the one grammar per role:
+
+| Role | Accepts | Base order | Suffix |
+|---|---|---|---|
+| delivery | `reference.js` unchanged: `5698-DELIV`, `5698-P-DELIV`, `5698-P2-DELIV`, `5626-2-P3-DELIV` | the order number | `DELIV` |
+| bench | `<ORDER>-D-<unit>` / `<ORDER>-F-<unit>`, unit 2-4 digits, not zero | everything before `-D-`/`-F-` | `BENCH` |
+| ironmongery | `<ORDER>` alone, e.g. `5698`, `5626-2` | itself | `IRN` |
+
+`<ORDER>` is digit groups joined by single hyphens, at most 20 characters.
+The grammars are disjoint, so a code scanned as one role can never be filed
+as another. Device records from before roles existed have no role and are
+treated as Delivery.
+
 ## Saving a photograph
 
-`PUT /api/photos/<reference>/<uuid>` (raw JPEG body, `X-Photo-Sha256`
-header): validated (`reference.js`, `safe-path.js`), checksum-verified,
-spooled locally, then handed to `archive.js` - which runs inside the SAME
-kind of forked, hard-timeout worker process the real archive engine has
-always used: write to `<root>\.incoming\<uuid>.part`, flush, rename into
-`<root>\<REFERENCE>\photo-NNN.jpg` (never overwriting an existing file,
-adopting its own file after a crash instead of duplicating it), then READ
-IT BACK and check its size and SHA-256 before the upload is ever reported
-successful to the iPad. `reference.js` is the exact same file loaded by
-both the server and the iPad page (see `http-server.js`'s dedicated route
-for it) - there is exactly one copy of the delivery-code grammar, never two
-that could quietly drift apart.
+`PUT /api/photos/<scanned code>/<uuid>` (raw JPEG body, `X-Photo-Sha256`
+header, optional `X-Photo-Role` naming the role the photo was TAKEN as -
+compared, never used): the token gives the role; the code is parsed with
+that role's grammar to get the base order; then checksum-verified, spooled
+locally, and handed to `archive.js` as `{ baseOrder, photoRole, photoId,
+bytes, sha256 }` - which runs inside the SAME kind of forked, hard-timeout
+worker process the real archive engine has always used: create or reuse
+`<root>\<baseOrder>\`, write to `<root>\.incoming\<uuid>.part`, flush,
+rename into `<root>\<baseOrder>\<NNN>-<SUFFIX>.jpg`, then READ IT BACK and
+check its size and SHA-256 before the upload is ever reported successful to
+the iPad.
+
+Numbering: `NNN` is one more than the highest number claimed by any
+`<digits>-<letters>.jpg` file already in the order folder (any role, any
+letter case), at least three digits - never a count of files, never a
+reused gap, never an overwrite (an existing name is skipped). Saves into the
+same order folder are serialised by a per-order lock in the server
+(`concurrency.js`'s `KeyedMutex`), so two iPads can never pick the same
+number. A retry of a photo already filed (same role suffix, size and
+SHA-256) adopts the existing file instead - no duplicate, no number used.
+
+`POST /api/photo-sessions/complete { sessionId, code, photosSaved }` closes
+a session for any role; only Delivery creates a DELIVERY_PHOTO_SCANS
+tracking event and an "Orders filed today" entry (see `SESSION_TRACKERS` in
+`http-server.js` - the place to add Bench/Ironmongery tracking later). The
+original `POST /api/delivery-sessions/complete` stays for iPads still running
+the previous page, and only accepts Delivery tokens.
 
 ## Layout
 
@@ -105,6 +140,7 @@ that could quietly drift apart.
 | `mdns.js` | Advertises the local hostname |
 | `http-server.js` | The local HTTPS server: the iPad page, the upload API, the plain-HTTP trust-profile bootstrap |
 | `reference.js` | The delivery-code grammar - shared verbatim by the server and the iPad page |
+| `photo-roles.js` | The three photo roles and their code grammars - shared verbatim by the server and the iPad page |
 | `archive.js` / `worker.js` / `worker-runner.js` | Files one photograph onto the drive and reads it back to verify, inside a forked, hard-timeout worker |
 | `storage-test.js` | The "Test Network Storage" button's real write-verify-cleanup check |
 | `safe-path.js` | The only code that decides what may become a file path |

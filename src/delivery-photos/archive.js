@@ -7,8 +7,18 @@
 // limit and simply kills the worker if it does not finish.
 //
 // Rules this file enforces:
-//   - The delivery folder name comes only from a strictly validated reference; file
-//     names are generated here (photo-001.jpg ...), never taken from anywhere.
+//   - The order folder name comes only from a strictly validated base order number
+//     (5698, 5626-2) and the file name is generated HERE, from the next free sequence
+//     number and the role suffix (001-DELIV.jpg, 002-BENCH.jpg, 003-IRN.jpg) - never
+//     a folder, file name or path supplied by the iPad.
+//   - The order folder is shared by every role, and numbered across the WHOLE
+//     folder: the next number is one past the highest number any existing file
+//     claims (see NUMBERED_FILE_PATTERN), never a count of files, never a reused gap.
+//   - Callers must not run two archivePhoto() calls for the same order folder at
+//     once - http-server.js holds a per-order lock around each call (see
+//     concurrency.js's KeyedMutex), and the worker is single-instance (lock.js).
+//   - Historical <ORDER>-DELIV folders from before the order-folder layout are
+//     never opened, moved, renamed or written to.
 //   - The archive root must already exist. It is never created.
 //   - A photograph is written to <root>/.incoming/<uuid>.part, flushed, and only
 //     then renamed into place. Existing files are never overwritten.
@@ -22,14 +32,18 @@ const nodePath = require('node:path');
 const fsOps = require('./fs-ops');
 const {
   INCOMING_DIR_NAME,
-  PHOTO_FILE_PATTERN,
-  assertDeliveryFolderName,
+  NUMBERED_FILE_PATTERN,
+  assertOrderFolderName,
   assertPhotoFileName,
   classifyRoot,
   resolveInsideRoot
 } = require('./safe-path');
 
+const { SUFFIXES } = require('./photo-roles');
+
 const UUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/;
+const MAX_SEQUENCE = 999999;
+const MAX_NAME_ATTEMPTS = 20;
 const SHA256 = /^[0-9a-f]{64}$/;
 const GB = 1024 ** 3;
 
@@ -107,15 +121,24 @@ async function probeRoot({ root, platform }) {
   return { ok: true, freeBytes: space.ok ? space.freeBytes : null };
 }
 
-async function listPhotoFiles(folder) {
+// Every file in the order folder whose name claims a sequence number (any
+// role, any letter case - see NUMBERED_FILE_PATTERN), with its number and
+// size. Sub-folders, and files that claim no number, are ignored.
+async function listNumberedFiles(folder) {
   const entries = await fs.readdir(folder, { withFileTypes: true });
   const files = [];
   for (const entry of entries) {
-    if (!entry.isFile() || !PHOTO_FILE_PATTERN.test(entry.name)) continue;
+    if (!entry.isFile()) continue;
+    const match = NUMBERED_FILE_PATTERN.exec(entry.name);
+    if (!match) continue;
     const stats = await fs.lstat(nodePath.join(folder, entry.name));
-    files.push({ name: entry.name, number: Number(/\d+/.exec(entry.name)[0]), size: stats.size });
+    files.push({ name: entry.name, number: Number(match[1]), size: stats.size });
   }
   return files;
+}
+
+function photoFileName(number, suffix) {
+  return `${String(number).padStart(3, '0')}-${suffix}.jpg`;
 }
 
 // Files the Bridge wrote and then had to give up on (killed part-way) are removed
@@ -132,21 +155,24 @@ async function sweepIncoming({ root, platform }) {
   }
 }
 
-// Files one photograph (already downloaded to the local spool) into <root>/<REFERENCE>/photo-NNN.jpg.
+// Files one photograph (already downloaded to the local spool) into
+// <root>/<baseOrder>/<NNN>-<photoRole>.jpg. `photoRole` is the role SUFFIX
+// (DELIV, BENCH or IRN), decided by the server from the device's pairing.
 // `hooks.afterPublish` exists only so tests can simulate a crash right after the rename.
 async function archivePhoto(params, hooks = {}) {
-  const { root, reference, photoId, spoolPath, sizeBytes, sha256, platform, minFreeGb = 0 } = params;
+  const { root, baseOrder, photoRole, photoId, spoolPath, sizeBytes, sha256, platform, minFreeGb = 0 } = params;
 
   if (!UUID.test(String(photoId))) throw new ArchiveError('BAD_INPUT', 'invalid photograph id');
   if (!SHA256.test(String(sha256)) || !Number.isInteger(sizeBytes) || sizeBytes < 1) throw new ArchiveError('BAD_INPUT', 'invalid size or checksum');
   if (typeof spoolPath !== 'string' || !nodePath.isAbsolute(spoolPath)) throw new ArchiveError('BAD_INPUT', 'invalid local file');
+  if (!SUFFIXES.includes(photoRole)) throw new ArchiveError('BAD_ROLE', 'invalid photo role');
   let folderName;
   try {
-    folderName = assertDeliveryFolderName(reference);
+    folderName = assertOrderFolderName(baseOrder);
   } catch (err) {
     // Re-thrown as our own error type: every failure this module raises is an
     // ArchiveError, never an internal detail of the safe-path module.
-    throw new ArchiveError('BAD_REFERENCE', err.message);
+    throw new ArchiveError('BAD_ORDER', err.message);
   }
 
   checkRoot(root, platform);
@@ -176,26 +202,31 @@ async function archivePhoto(params, hooks = {}) {
   await ensureDirectory(incoming);
   await fsOps.sweepTempFiles(incoming);
 
+  // Created if new, reused if it already exists (created earlier by any role).
   const folder = resolveInsideRoot(root, [folderName]);
   await ensureDirectory(folder);
 
-  // A crash after the rename but before the report leaves the file already in place: reuse it.
-  const existing = await listPhotoFiles(folder);
+  // A retry of a photograph that is already filed (the iPad never heard the
+  // answer, or the worker crashed after the rename) finds its own file - same
+  // role, same size, same SHA-256 - and reuses it: no second file, and no
+  // sequence number consumed.
+  const existing = await listNumberedFiles(folder);
+  const ownSuffix = new RegExp(`-${photoRole}\\.jpg$`);
   for (const file of existing) {
-    if (file.size !== sizeBytes) continue;
+    if (file.size !== sizeBytes || !ownSuffix.test(file.name)) continue;
     const check = await fsOps.verifyFile(nodePath.join(folder, file.name), { size: sizeBytes, sha256 });
     if (check.ok) return { storagePath: `${folderName}/${file.name}`, adopted: true, sizeBytes, sha256 };
   }
 
   let number = existing.reduce((highest, file) => Math.max(highest, file.number), 0) + 1;
-  for (let attempt = 0; attempt < 5; attempt++, number++) {
-    const name = `photo-${String(number).padStart(3, '0')}.jpg`;
+  for (let attempt = 0; attempt < MAX_NAME_ATTEMPTS && number <= MAX_SEQUENCE; attempt++, number++) {
+    const name = photoFileName(number, photoRole);
     assertPhotoFileName(name);
     let finalPath;
     try {
       ({ finalPath } = await fsOps.publishNewFile({ tempDir: incoming, finalDir: folder, finalName: name, data }));
     } catch (err) {
-      if (err instanceof fsOps.AlreadyExistsError) continue; // someone created that name meanwhile: take the next number
+      if (err instanceof fsOps.AlreadyExistsError) continue; // that exact name appeared meanwhile: take the next number, never overwrite
       throw err;
     }
     if (hooks.afterPublish) await hooks.afterPublish();

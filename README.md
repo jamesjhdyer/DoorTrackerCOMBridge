@@ -43,6 +43,31 @@ app, nothing extra to install), a port, and the network archive folder (a
 panel shows the address to open on the iPad, **Orders filed today** and the
 Google Sheet sync status.
 
+### Photo roles and how photographs are filed
+
+Every iPad is paired as one of three **photo roles**, chosen on this PC
+under **Pair a New iPad** and fixed to that iPad until it is removed (the
+iPad cannot choose or change it):
+
+| Role | Scans | Example | Files as |
+|---|---|---|---|
+| Delivery | the delivery note | `5698-P2-DELIV` | `001-DELIV.jpg` |
+| Bench | a door or frame production label | `5698-D-07`, `5626-2-F-03` | `002-BENCH.jpg` |
+| Ironmongery | an order number (scanned or typed) | `5698`, `5626-2` | `003-IRN.jpg` |
+
+Every photograph, whatever its role, goes into ONE folder per order, named
+with the base order number only - `S:\Delivery Photographs\5698\` or
+`...\5626-2\` - and is numbered across the whole folder, so Delivery, Bench
+and Ironmongery photos of one order sit side by side in the order taken
+(`001-DELIV.jpg`, `002-BENCH.jpg`, `003-IRN.jpg`, `004-DELIV.jpg`...).
+Folders from before this layout (`5698-DELIV\photo-001.jpg`) are left
+exactly as they are.
+
+Only Delivery sessions are tracked in the Google Sheet (DELIVERY_PHOTO_SCANS,
+with Full/Part details from the delivery code) and counted in **Orders filed
+today**. To give an iPad a different role, **Remove** it from the Paired
+iPads list and pair it again with the new role.
+
 The iPad needs its camera to work, which requires a genuine secure (HTTPS)
 context — the app is its own tiny certificate authority for this, and an
 iPad only ever has to trust it once (open the address shown, install the one
@@ -55,15 +80,16 @@ that is a normal, un-scary HTTPS connection.
 The iPad tool keeps working with no connection to this PC. Photographs taken
 while the Photo Service cannot be reached are saved on the iPad (in that
 site's own browser storage, IndexedDB) and sent automatically the next time
-the tool is open on the workshop Wi-Fi. A delivery only counts as filed, and
+the tool is open on the workshop Wi-Fi - for all three roles. A delivery only counts as filed, and
 only gets its Google Sheet row, once every photograph has been verified on
 the company drive.
 
 One-time setup, **on the workshop Wi-Fi**:
 
-1. Open the address shown in the app in Safari and pair the iPad as usual.
+1. Open the address shown in the app in Safari and pair the iPad as usual
+   (choosing its role on the PC first).
 2. Share → **Add to Home Screen**, then open **Delivery Photos** from the
-   Home Screen and pair it once more (a Home Screen app has its own storage,
+   Home Screen and pair it once more, with the same role (a Home Screen app has its own storage,
    separate from Safari's - use only the Home Screen app from then on).
 3. On its pending screen, "Opens without the workshop PC" should say **yes**.
 

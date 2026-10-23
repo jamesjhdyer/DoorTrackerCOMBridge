@@ -366,3 +366,21 @@ html, body {
 @media (min-width: 700px) {
   .screen { max-width: 900px; margin: 0 auto; width: 100%; }
 }
+
+/* ---------------- photo roles ---------------- */
+/* Each role gets its own heading colour so a Bench or Ironmongery iPad can
+   never be mistaken for a Delivery one at a glance. */
+
+body[data-role='delivery'] { --role-colour: #4ade80; }
+body[data-role='bench'] { --role-colour: #fbbf24; }
+body[data-role='ironmongery'] { --role-colour: #60a5fa; }
+
+.brand,
+.capture-role { color: var(--role-colour, inherit); }
+.brand { font-size: 26px; font-weight: 800; }
+.capture-role { font-size: 14px; font-weight: 800; letter-spacing: 0.08em; }
+
+.pending-item-role { font-size: 14px; font-weight: 800; letter-spacing: 0.06em; text-transform: uppercase; }
+.pending-item-role.role-delivery { color: #4ade80; }
+.pending-item-role.role-bench { color: #fbbf24; }
+.pending-item-role.role-ironmongery { color: #60a5fa; }

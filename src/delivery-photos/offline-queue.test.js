@@ -13,6 +13,7 @@ const { IDBFactory } = require('fake-indexeddb');
 
 const Queue = require(nodePath.join(__dirname, '..', '..', 'delivery-photos-web', 'offline-queue.js'));
 const { parse } = require('./reference');
+const PhotoRoles = require('./photo-roles');
 const { jpeg } = require('./helpers');
 
 const sha = (buf) => createHash('sha256').update(Buffer.from(buf)).digest('hex');
@@ -32,21 +33,29 @@ function sessionFor(reference) {
   return { sessionId: randomUUID(), ...Queue.deliveryMetadata(parse(reference)) };
 }
 
+function roleSession(role, code) {
+  const parsed = PhotoRoles.parseForRole(role, code);
+  assert.equal(parsed.ok, true, parsed.reason);
+  return { sessionId: randomUUID(), ...Queue.sessionMetadata(parsed) };
+}
+
 // A scripted Photo Service: records every call; `behaviour` can make it
 // unreachable, revoke pairing, or reject specific photos.
 function fakeService() {
   const svc = {
     reachable: true,
     paired: true,
+    role: 'delivery', // what the PC says this iPad is paired as
+    wrongRolePhotoIds: new Set(),
     rejectPhotoIds: new Set(),
     dropAfterUploads: Infinity, // go "unreachable" after this many successful uploads
     failComplete: false,
     uploads: [],
     completes: [],
     async checkService() {
-      return { reachable: svc.reachable, paired: svc.reachable && svc.paired };
+      return { reachable: svc.reachable, paired: svc.reachable && svc.paired, role: svc.role };
     },
-    async uploadPhoto({ reference, photoId, bytes, sha256 }) {
+    async uploadPhoto({ role, code, photoId, bytes, sha256 }) {
       if (!svc.reachable) return { ok: false, unreachable: true, error: 'Could not reach the PC.' };
       if (!svc.paired) return { ok: false, needsPairing: true, error: 'This device is not paired.' };
       if (svc.uploads.length >= svc.dropAfterUploads) {
@@ -55,7 +64,8 @@ function fakeService() {
       }
       assert.equal(sha(bytes), sha256, 'the queued bytes must still match their checksum');
       if (svc.rejectPhotoIds.has(photoId)) return { ok: false, error: 'The network drive could not be reached.' };
-      svc.uploads.push({ reference, photoId, sha256 });
+      if (svc.wrongRolePhotoIds.has(photoId)) return { ok: false, wrongRole: true, error: 'This iPad is now paired for another role.' };
+      svc.uploads.push({ role, code, photoId, sha256 });
       return { ok: true };
     },
     async completeSession(body) {
@@ -195,8 +205,8 @@ test('sending pending deliveries: every photo in order, then completion, then th
   assert.deepEqual(result, { outcome: 'done', sent: 2, failed: 0 });
   assert.deepEqual(service.uploads.map((u) => u.photoId), [...shotsA, ...shotsB].map((p) => p.photoId));
   assert.deepEqual(service.completes, [
-    { sessionId: a.sessionId, reference: '5698-DELIV', photosSaved: 2 },
-    { sessionId: b.sessionId, reference: '5698-P2-DELIV', photosSaved: 3 }
+    { sessionId: a.sessionId, role: 'delivery', code: '5698-DELIV', photosSaved: 2 },
+    { sessionId: b.sessionId, role: 'delivery', code: '5698-P2-DELIV', photosSaved: 3 }
   ]);
   assert.deepEqual(await store.listSessions(), []);
   assert.deepEqual(await store.getPhotos(a.sessionId), []);
@@ -213,7 +223,7 @@ test('one failed photo: the session is NOT completed, stays queued, and the othe
 
   const result = await engine.syncAll();
   assert.deepEqual(result, { outcome: 'done', sent: 1, failed: 1 });
-  assert.deepEqual(service.completes.map((c) => c.reference), ['5701-DELIV'], 'no completion for the failed session');
+  assert.deepEqual(service.completes.map((c) => c.code), ['5701-DELIV'], 'no completion for the failed session');
 
   const remaining = await store.listSessions();
   assert.deepEqual(remaining.map((s) => s.reference), ['5698-DELIV'], 'only the completed session was deleted');
@@ -451,4 +461,115 @@ test('formatBytes reads naturally', () => {
   assert.equal(Queue.formatBytes(4.8e6), '4.8 MB');
   assert.equal(Queue.formatBytes(1500), '2 KB');
   assert.equal(Queue.formatBytes(null), 'unknown');
+});
+
+// ---- Photo roles in the queue ------------------------------------------------
+
+test('Bench and Ironmongery sessions keep their role, original scanned value and base order, and survive a reload', async () => {
+  const indexedDB = new IDBFactory();
+  const first = await Queue.openStore({ indexedDB });
+  await first.saveSession(roleSession('bench', '5698-D-07'), photos(4, 'bench'));
+  await first.saveSession(roleSession('ironmongery', '5626-2'), photos(3, 'irn'));
+  await first.saveSession(roleSession('delivery', '5698-P2-DELIV'), photos(5, 'deliv'));
+  first.close();
+
+  const reopened = await Queue.openStore({ indexedDB });
+  const sessions = await reopened.listSessions();
+  assert.deepEqual(
+    sessions.map((s) => [s.role, s.code, s.baseOrder, s.photoCount, s.deliveryType, s.partNo]),
+    [
+      ['bench', '5698-D-07', '5698', 4, '', ''],
+      ['ironmongery', '5626-2', '5626-2', 3, '', ''],
+      ['delivery', '5698-P2-DELIV', '5698', 5, 'Part Delivery', 2]
+    ]
+  );
+  for (const s of sessions) {
+    assert.match(s.sessionId, /^[0-9a-f-]{36}$/);
+    assert.ok(s.capturedAt);
+    const stored = await reopened.getPhotos(s.sessionId);
+    assert.equal(stored.length, s.photoCount);
+    assert.ok(stored.every((p) => p.bytes.byteLength > 1000 && /^[0-9a-f]{64}$/.test(p.sha256) && p.capturedAt));
+  }
+  reopened.close();
+});
+
+test('a Bench iPad sends its queued Bench sessions with their own role and scanned code', async () => {
+  const { store, service, engine } = await setup();
+  service.role = 'bench';
+  const a = roleSession('bench', '5698-D-07');
+  const b = roleSession('bench', '5626-2-F-03');
+  await store.saveSession(a, photos(2, 'a'));
+  await store.saveSession(b, photos(1, 'b'));
+  assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 2, failed: 0 });
+  assert.deepEqual([...new Set(service.uploads.map((u) => `${u.role} ${u.code}`))], ['bench 5698-D-07', 'bench 5626-2-F-03']);
+  assert.deepEqual(service.completes, [
+    { sessionId: a.sessionId, role: 'bench', code: '5698-D-07', photosSaved: 2 },
+    { sessionId: b.sessionId, role: 'bench', code: '5626-2-F-03', photosSaved: 1 }
+  ]);
+  assert.deepEqual(await store.listSessions(), []);
+});
+
+test('re-paired as another role: sessions taken as the old role are kept, never sent; matching ones still go', async () => {
+  const { store, service, engine } = await setup();
+  service.role = 'delivery'; // this iPad was a Bench iPad when these were taken
+  const bench = roleSession('bench', '5698-D-07');
+  const delivery = roleSession('delivery', '5701-DELIV');
+  await store.saveSession(bench, photos(2, 'bench'));
+  await store.saveSession(delivery, photos(1, 'deliv'));
+
+  assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 1, failed: 1 });
+  assert.deepEqual(service.uploads.map((u) => u.code), ['5701-DELIV'], 'nothing of the Bench session was uploaded');
+  const [kept] = await store.listSessions();
+  assert.equal(kept.sessionId, bench.sessionId);
+  assert.equal(kept.status, Queue.STATUS.WRONG_ROLE);
+  assert.equal((await store.getPhotos(bench.sessionId)).length, 2, 'every photo kept');
+
+  // Paired as Bench again on the PC: it goes.
+  service.role = 'bench';
+  assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 1, failed: 0 });
+  assert.deepEqual(await store.listSessions(), []);
+});
+
+test('the PC refusing a photo for the wrong role keeps the whole session on the iPad', async () => {
+  const { store, service, engine } = await setup();
+  const session = roleSession('delivery', '5698-DELIV');
+  const shots = photos(2);
+  await store.saveSession(session, shots);
+  service.wrongRolePhotoIds.add(shots[0].photoId);
+  assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 0, failed: 1 });
+  const [kept] = await store.listSessions();
+  assert.equal(kept.status, Queue.STATUS.WRONG_ROLE);
+  assert.deepEqual(service.completes, []);
+});
+
+test('a session queued before roles existed (no role, no code) is sent as the Delivery it was', async () => {
+  const indexedDB = new IDBFactory();
+  const store = await Queue.openStore({ indexedDB });
+  const legacy = { sessionId: randomUUID(), reference: '5698-P-DELIV', orderNumber: '5698', deliveryType: 'Part Delivery', partNo: 1 };
+  await store.saveSession(legacy, photos(1, 'legacy'));
+  // Strip the new fields, exactly as a record written by the previous version looks.
+  await new Promise((resolve, reject) => {
+    const open = indexedDB.open(Queue.DB_NAME);
+    open.onsuccess = () => {
+      const tx = open.result.transaction('sessions', 'readwrite');
+      const os = tx.objectStore('sessions');
+      const get = os.get(legacy.sessionId);
+      get.onsuccess = () => {
+        const { role, code, baseOrder, ...old } = get.result;
+        os.put(old);
+      };
+      tx.oncomplete = () => {
+        open.result.close();
+        resolve();
+      };
+      tx.onerror = () => reject(tx.error);
+    };
+  });
+  const [record] = await store.listSessions();
+  assert.equal(record.role, undefined);
+
+  const service = fakeService();
+  const engine = Queue.createSyncEngine({ store, api: service });
+  assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 1, failed: 0 });
+  assert.deepEqual(service.completes, [{ sessionId: legacy.sessionId, role: 'delivery', code: '5698-P-DELIV', photosSaved: 1 }]);
 });

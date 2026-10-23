@@ -17,7 +17,7 @@ const { createHash } = require('node:crypto');
 
 const WEB_ROOT = nodePath.join(__dirname, '..', '..', 'delivery-photos-web');
 
-// URL path -> file on disk. reference.js is the one file served from the
+// URL path -> file on disk. reference.js and photo-roles.js are the files served from the
 // server's own code rather than the web root (see http-server.js).
 const SHELL_FILES = {
   '/': nodePath.join(WEB_ROOT, 'index.html'),
@@ -27,6 +27,7 @@ const SHELL_FILES = {
   '/scanner.js': nodePath.join(WEB_ROOT, 'scanner.js'),
   '/offline-queue.js': nodePath.join(WEB_ROOT, 'offline-queue.js'),
   '/reference.js': nodePath.join(__dirname, 'reference.js'),
+  '/photo-roles.js': nodePath.join(__dirname, 'photo-roles.js'),
   '/vendor/zxing/zxing-reader.js': nodePath.join(WEB_ROOT, 'vendor', 'zxing', 'zxing-reader.js'),
   '/vendor/zxing/zxing_reader.wasm': nodePath.join(WEB_ROOT, 'vendor', 'zxing', 'zxing_reader.wasm'),
   '/manifest.webmanifest': nodePath.join(WEB_ROOT, 'manifest.webmanifest'),

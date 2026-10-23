@@ -72,4 +72,40 @@ class ConcurrencyLimiter {
   }
 }
 
-module.exports = { ConcurrencyLimiter, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUE, DEFAULT_MAX_WAIT_MS };
+// One-at-a-time per key: `run(key, fn)` waits for every earlier run() with
+// the same key to settle (success or failure) before starting fn. Used with
+// the base order number as the key, around each archive operation (see
+// http-server.js), so two iPads saving into the same order folder at the
+// same moment can never both look at the folder, both pick the same next
+// number, and race to claim it - one finishes (file renamed into place and
+// read back) before the other even lists the folder. Different orders still
+// run side by side, within the ConcurrencyLimiter above.
+//
+// Each archive operation already has its own hard time limit (worker-runner.js),
+// so a hung network drive can only ever hold one order's queue for that long.
+class KeyedMutex {
+  constructor() {
+    this.tails = new Map();
+  }
+
+  run(key, fn) {
+    const previous = this.tails.get(key) || Promise.resolve();
+    const result = previous.then(() => fn());
+    const tail = result.then(
+      () => {},
+      () => {}
+    );
+    this.tails.set(key, tail);
+    tail.then(() => {
+      if (this.tails.get(key) === tail) this.tails.delete(key); // nothing queued behind it: forget the key
+    });
+    return result;
+  }
+
+  // For tests/diagnostics only.
+  size() {
+    return this.tails.size;
+  }
+}
+
+module.exports = { ConcurrencyLimiter, KeyedMutex, DEFAULT_MAX_CONCURRENT, DEFAULT_MAX_QUEUE, DEFAULT_MAX_WAIT_MS };

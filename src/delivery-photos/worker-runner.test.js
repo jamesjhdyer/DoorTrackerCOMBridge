@@ -77,7 +77,7 @@ test('a worker that crashes after doing real work (simulating power loss mid-fil
     await assert.rejects(
       runInWorker(
         'archive',
-        { root: env.share, reference: '5698-DELIV', photoId: randomUUID(), spoolPath, sizeBytes: bytes.length, sha256: fsOps.sha256OfBuffer(bytes) },
+        { root: env.share, baseOrder: '5698', photoRole: 'DELIV', photoId: randomUUID(), spoolPath, sizeBytes: bytes.length, sha256: fsOps.sha256OfBuffer(bytes) },
         { timeoutMs: 10000, testMode: 'crash-after-rename' }
       ),
       (err) => {
@@ -87,7 +87,7 @@ test('a worker that crashes after doing real work (simulating power loss mid-fil
       }
     );
 
-    assert.ok(fs.readFileSync(nodePath.join(env.share, '5698-DELIV', 'photo-001.jpg')).equals(bytes), 'the photograph must already be on the drive despite the crash');
+    assert.ok(fs.readFileSync(nodePath.join(env.share, '5698', '001-DELIV.jpg')).equals(bytes), 'the photograph must already be on the drive despite the crash');
   } finally {
     env.cleanup();
   }

@@ -36,11 +36,19 @@ const RESERVED_DEVICE_NAMES = new Set(
 );
 
 // ---- Allow-lists -----------------------------------------------------------
-// Delivery folder: 5698-DELIV, 5698-P-DELIV, 5698-P2-DELIV, 5626-2-P3-DELIV.
-// Upper-case only and single hyphens, so two spellings can never map to the
-// same folder on a case-insensitive Windows filesystem.
-const DELIVERY_FOLDER_PATTERN = /^[0-9A-Z]+(?:-[0-9A-Z]+)*-DELIV$/;
-const PHOTO_FILE_PATTERN = /^photo-\d{3,6}\.jpg$/;
+// Order folder: the base order number only - 5698, 5626-2. Digits and single
+// hyphens, nothing else, so it can never be a reserved device name, a
+// relative component, or two spellings of the same folder.
+const ORDER_FOLDER_PATTERN = /^[0-9]+(?:-[0-9]+)*$/;
+// A photograph this program writes: <3+ digit number>-<role suffix>.jpg,
+// e.g. 001-DELIV.jpg, 002-BENCH.jpg, 003-IRN.jpg. Upper-case suffix only.
+const PHOTO_FILE_PATTERN = /^(\d{3,6})-(DELIV|BENCH|IRN)\.jpg$/;
+// Any existing file whose name CLAIMS a sequence number - written by this
+// program, or added or renamed by a person in Explorer in any letter case
+// (Windows does not distinguish 004-bench.JPG from 004-BENCH.jpg). Every
+// such number counts as taken when choosing the next one; nothing else in
+// the folder (notes, legacy photo-001.jpg names, ...) does.
+const NUMBERED_FILE_PATTERN = /^(\d{3,6})-[A-Za-z]+\.jpe?g$/i;
 const TEMP_FILE_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\.part$/;
 // Names used only by the storage test (tools/storage-test.js).
 const TEST_DIR_PATTERN = /^_storage-test-\d{8}-\d{6}-[0-9a-f]{8}$/;
@@ -76,7 +84,7 @@ function assertMatches(kind, name, pattern) {
   return name;
 }
 
-const assertDeliveryFolderName = (name) => assertMatches('delivery folder', name, DELIVERY_FOLDER_PATTERN);
+const assertOrderFolderName = (name) => assertMatches('order folder', name, ORDER_FOLDER_PATTERN);
 const assertPhotoFileName = (name) => assertMatches('photo file name', name, PHOTO_FILE_PATTERN);
 const assertTempFileName = (name) => assertMatches('temporary file name', name, TEMP_FILE_PATTERN);
 const assertTestDirName = (name) => assertMatches('test directory', name, TEST_DIR_PATTERN);
@@ -176,15 +184,16 @@ module.exports = {
   UnsafePathError,
   MAX_SEGMENT_LENGTH,
   MAX_FULL_PATH_LENGTH,
-  DELIVERY_FOLDER_PATTERN,
+  ORDER_FOLDER_PATTERN,
   PHOTO_FILE_PATTERN,
+  NUMBERED_FILE_PATTERN,
   TEMP_FILE_PATTERN,
   TEST_DIR_PATTERN,
   INCOMING_DIR_NAME,
   TEST_CANARY_NAME,
   TEST_MANIFEST_NAME,
   checkSegment,
-  assertDeliveryFolderName,
+  assertOrderFolderName,
   assertPhotoFileName,
   assertTempFileName,
   assertTestDirName,

@@ -194,9 +194,9 @@ function reloadDeliveryPhotosWorker() {
 }
 
 // Sends a command to the worker and waits for its one matching reply,
-// correlated by requestId - used only by the two pairing-management actions
+// correlated by requestId - used only by the pairing-management actions
 // below, which (unlike reload/stop) need an actual answer back for the UI.
-function sendWorkerRequest(cmd, timeoutMs = 5000) {
+function sendWorkerRequest(cmd, payload = {}, timeoutMs = 5000) {
   if (!deliveryPhotos.child) return Promise.resolve({ ok: false, error: 'The Delivery Photos service is not running. Start it first.' });
 
   const requestId = randomUUID();
@@ -206,7 +206,7 @@ function sendWorkerRequest(cmd, timeoutMs = 5000) {
       resolve({ ok: false, error: 'The Delivery Photos service did not answer in time.' });
     }, timeoutMs);
     deliveryPhotos.pendingRequests.set(requestId, { resolve: (message) => resolve({ ok: true, ...message }), timer });
-    deliveryPhotos.child.send({ cmd, requestId });
+    deliveryPhotos.child.send({ ...payload, cmd, requestId });
   });
 }
 
@@ -757,10 +757,22 @@ ipcMain.handle('start-delivery-photos-service', async () => {
 
 // "Pair a new iPad": a short, one-time code the operator reads off this
 // screen and types into the iPad - see auth.js/http-server.js's /api/pair.
-// Never touches settings, certificates, or the running servers.
-ipcMain.handle('generate-delivery-photos-pairing-code', async () => {
-  const result = await sendWorkerRequest('generate-pairing-code');
-  return result.ok ? { ok: true, code: result.code, expiresAt: result.expiresAt } : { ok: false, error: result.error };
+// The photo role (delivery/bench/ironmongery) is chosen HERE and fixed into
+// the code; the worker refuses anything else. Never touches settings,
+// certificates, or the running servers.
+ipcMain.handle('generate-delivery-photos-pairing-code', async (event, options) => {
+  const { role, name } = options || {};
+  const result = await sendWorkerRequest('generate-pairing-code', { role: String(role || ''), name: String(name || '') });
+  if (!result.ok || result.error) return { ok: false, error: result.error };
+  return { ok: true, code: result.code, expiresAt: result.expiresAt, role: result.role, name: result.name };
+});
+
+// "Remove" on one paired iPad - only that iPad must pair again (e.g. to
+// give it a different photo role).
+ipcMain.handle('revoke-delivery-photos-device', async (event, deviceId) => {
+  const result = await sendWorkerRequest('revoke-device', { deviceId: String(deviceId || '') });
+  if (!result.ok) return { ok: false, error: result.error };
+  return result.removed ? { ok: true } : { ok: false, error: 'That iPad is no longer paired.' };
 });
 
 // "Reset pairing": every previously paired iPad must pair again. A

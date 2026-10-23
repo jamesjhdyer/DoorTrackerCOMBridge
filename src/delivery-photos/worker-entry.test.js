@@ -182,3 +182,44 @@ test('editing settings and sending "reload" applies them without needing a resta
     env.cleanup();
   }
 });
+
+test('pairing over IPC: the code carries the PC-chosen role, an invalid role is refused, and the device list is reported', async () => {
+  const env = makeEnv();
+  configure(env, { port: 8790 });
+  const worker = spawnWorker(env);
+  const ask = (message) =>
+    new Promise((resolve) => {
+      const requestId = `${message.cmd}-${Math.random()}`;
+      const onMessage = (m) => {
+        if (m && m.requestId === requestId) {
+          worker.child.off('message', onMessage);
+          resolve(m);
+        }
+      };
+      worker.child.on('message', onMessage);
+      worker.child.send({ ...message, requestId });
+    });
+  try {
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => s.state === 'running')), worker.output());
+
+    const refused = await ask({ cmd: 'generate-pairing-code', role: 'admin' });
+    assert.match(refused.error, /photo role/);
+    assert.equal(refused.code, undefined);
+
+    const issued = await ask({ cmd: 'generate-pairing-code', role: 'bench', name: 'Bench left' });
+    assert.equal(issued.role, 'bench');
+    assert.equal(issued.name, 'Bench left');
+    assert.match(issued.code, /^[2-9A-HJ-NP-Z]{8}$/);
+
+    // The iPad uses the code (written straight to the same devices file a
+    // real /api/pair would); reset then shows an empty list.
+    const removed = await ask({ cmd: 'revoke-device', deviceId: 'no-such-device' });
+    assert.equal(removed.removed, false);
+    await ask({ cmd: 'revoke-devices' });
+    assert.ok(await waitFor(() => worker.statusEvents.some((s) => Array.isArray(s.devices) && s.devices.length === 0 && s.pairedDevices === 0)));
+  } finally {
+    worker.child.kill('SIGKILL');
+    await worker.exited;
+    env.cleanup();
+  }
+});

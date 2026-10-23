@@ -100,13 +100,31 @@
     </div>
 
     <div class="log-section">
-      <h2>Delivery Photos - Pair an iPad</h2>
-      <p class="hint">An iPad must be paired once before it can upload photos - this is what stops any other device on the network from uploading just because it can reach this PC. Open the Delivery Photos page on the iPad, then generate a code here and type it in there.</p>
+      <h2>Delivery Photos - Pair a New iPad</h2>
+      <p class="hint">An iPad must be paired once before it can upload photos - this is what stops any other device on the network from uploading just because it can reach this PC. Choose what this iPad will photograph, generate a code here, and type it in on the iPad. The role cannot be changed from the iPad: to change it, remove the iPad below and pair it again.</p>
+      <fieldset class="dp-role-picker">
+        <legend>Role</legend>
+        <label><input type="radio" name="dp-pair-role" value="delivery" /> Delivery <span class="hint">- scans delivery codes (5698-DELIV), files 001-DELIV.jpg</span></label>
+        <label><input type="radio" name="dp-pair-role" value="bench" /> Bench <span class="hint">- scans door/frame labels (5698-D-01), files 001-BENCH.jpg</span></label>
+        <label><input type="radio" name="dp-pair-role" value="ironmongery" /> Ironmongery <span class="hint">- scans or types an order number (5698), files 001-IRN.jpg</span></label>
+      </fieldset>
+      <div class="field">
+        <label for="dp-pair-name">Device name (optional)</label>
+        <input id="dp-pair-name" type="text" maxlength="40" placeholder="e.g. iPad 2, Bench left" />
+      </div>
       <div class="field buttons">
-        <button id="dp-pair-btn">Pair a New iPad</button>
-        <button id="dp-revoke-btn">Reset Pairing (un-pair all iPads)</button>
+        <button id="dp-pair-btn">Generate Pairing Code</button>
       </div>
       <pre id="dp-pairing-result" class="dp-test-result" hidden></pre>
+
+      <h3>Paired iPads</h3>
+      <table class="dp-devices">
+        <thead><tr><th>Device</th><th>Role</th><th>Paired</th><th></th></tr></thead>
+        <tbody id="dp-devices-body"><tr><td colspan="4">-</td></tr></tbody>
+      </table>
+      <div class="field buttons">
+        <button id="dp-revoke-btn">Reset Pairing (un-pair all iPads)</button>
+      </div>
     </div>
 
     <div class="log-section">

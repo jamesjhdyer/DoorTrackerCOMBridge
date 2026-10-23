@@ -96,3 +96,46 @@ test('many operations can run at once without ever exceeding maxConcurrent', asy
   await Promise.all(Array.from({ length: 20 }, () => run()));
   assert.ok(peak <= 4, `peak concurrency ${peak} must never exceed the limit`);
 });
+
+// ---- KeyedMutex: one archive operation per order folder at a time ----
+
+const { KeyedMutex } = require('./concurrency');
+const tick = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+
+test('KeyedMutex runs same-key work strictly one after another, in arrival order', async () => {
+  const mutex = new KeyedMutex();
+  const events = [];
+  const job = (name, ms) => mutex.run('5698', async () => {
+    events.push(`start ${name}`);
+    await tick(ms);
+    events.push(`end ${name}`);
+    return name;
+  });
+  const results = await Promise.all([job('a', 30), job('b', 5), job('c', 1)]);
+  assert.deepEqual(results, ['a', 'b', 'c']);
+  assert.deepEqual(events, ['start a', 'end a', 'start b', 'end b', 'start c', 'end c']);
+  assert.equal(mutex.size(), 0, 'keys are forgotten once idle');
+});
+
+test('KeyedMutex lets different keys run side by side', async () => {
+  const mutex = new KeyedMutex();
+  let concurrent = 0;
+  let peak = 0;
+  const job = (key) => mutex.run(key, async () => {
+    peak = Math.max(peak, ++concurrent);
+    await tick(20);
+    concurrent--;
+  });
+  await Promise.all([job('5698'), job('5626-2'), job('5701')]);
+  assert.equal(peak, 3);
+});
+
+test('KeyedMutex: a failure is passed to its own caller and never blocks the next run', async () => {
+  const mutex = new KeyedMutex();
+  const failing = mutex.run('5698', async () => {
+    throw new Error('drive went away');
+  });
+  const next = mutex.run('5698', async () => 'still runs');
+  await assert.rejects(failing, /drive went away/);
+  assert.equal(await next, 'still runs');
+});

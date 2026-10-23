@@ -8,7 +8,7 @@ const nodePath = require('node:path');
 const https = require('node:https');
 const forge = require('node-forge');
 
-const { ensureCertificates, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames } = require('./certs');
+const { ensureCertificates, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames, randomSerial } = require('./certs');
 
 function scratch() {
   const dir = fs.mkdtempSync(nodePath.join(os.tmpdir(), 'dp-certs-'));
@@ -149,5 +149,14 @@ test('the trust-profile .mobileconfig is well-formed, embeds only the CA certifi
     assert.ok(!profile.includes(keyFingerprint));
   } finally {
     s.cleanup();
+  }
+});
+
+test('certificate serial numbers are always positive, minimal DER integers (no "illegal padding")', () => {
+  for (let i = 0; i < 5000; i++) {
+    const serial = randomSerial();
+    assert.match(serial, /^[0-9a-f]{32}$/);
+    const first = parseInt(serial.slice(0, 2), 16);
+    assert.ok(first >= 0x01 && first <= 0x7f, `first byte ${serial.slice(0, 2)} would be negative or padded`);
   }
 });

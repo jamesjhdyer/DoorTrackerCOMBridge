@@ -1,7 +1,7 @@
 {
   "name": "door-tracker-com-bridge",
   "productName": "Door Tracker COM Bridge",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Desktop app for the workshop PC: NETUM NT-1228BL scanner input over a Windows COM/serial port, Zebra label printing, and the Delivery Photos local service (iPad camera -> this PC -> the company network drive, entirely on the workshop network - no cloud, no website dependency).",
   "main": "src/main.js",
   "private": true,

@@ -420,3 +420,29 @@ tbody tr:hover {
   font-size: 13px;
   margin-top: 8px;
 }
+
+.dp-role-picker {
+  border: 1px solid #e5e7eb;
+  border-radius: 6px;
+  padding: 8px 14px 10px;
+  margin: 12px 0;
+}
+.dp-role-picker legend {
+  font-weight: 600;
+  padding: 0 4px;
+}
+.dp-role-picker label {
+  display: block;
+  margin: 6px 0;
+  cursor: pointer;
+}
+.dp-role-picker .hint {
+  display: inline;
+}
+
+.dp-devices {
+  margin: 8px 0 12px;
+}
+.dp-role-badge {
+  font-weight: 600;
+}

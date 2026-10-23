@@ -1,4 +1,5 @@
-// The iPad's own offline queue: delivery photo sessions that could not be
+// The iPad's own offline queue: photo sessions (Delivery, Bench or
+// Ironmongery - see photo-roles.js) that could not be
 // sent to the Windows Photo Service at the time (the iPad was away from the
 // workshop Wi-Fi, the PC was off, pairing had been reset...) are kept here,
 // in this site's own IndexedDB, until they can be.
@@ -17,8 +18,12 @@
 //     back 201 (saved and read back off the company drive by the PC) AND the
 //     PC has acknowledged the session-complete report. Nothing is deleted on
 //     a failure, a lost connection, or a pairing problem.
-//   - Records hold only delivery metadata and photographs: never the pairing
-//     token, network paths, or any credential.
+//   - Records hold only session metadata and photographs: never the pairing
+//     token, network paths, file names, or any credential.
+//   - A session remembers the role it was taken as. It is only ever sent by
+//     an iPad still paired as that role - and the PC checks the role against
+//     the pairing token regardless, so editing a queued record can never
+//     turn one kind of photo into another.
 'use strict';
 
 (function (root, factory) {
@@ -38,8 +43,19 @@
     PENDING: 'pending', // waiting to send (also what an interrupted 'syncing' is treated as)
     SYNCING: 'syncing', // a send attempt is in progress (or was, when the page was closed)
     FAILED: 'failed', // the last attempt reached the PC but did not fully succeed
-    NEEDS_PAIRING: 'needs_pairing' // the PC rejected this iPad's pairing token
+    NEEDS_PAIRING: 'needs_pairing', // the PC rejected this iPad's pairing token
+    WRONG_ROLE: 'wrong_role' // taken as one role, but this iPad is now paired as another
   };
+
+  // Sessions queued before photo roles existed carry no role or code: they
+  // are Delivery sessions, and their delivery reference is the scanned code.
+  function sessionRole(session) {
+    return session.role || 'delivery';
+  }
+
+  function sessionCode(session) {
+    return session.code || session.reference;
+  }
 
   // Above this fraction of the browser's own quota, the person is warned.
   const HIGH_USAGE_FRACTION = 0.8;
@@ -79,11 +95,22 @@
   // Google Sheet, from reference.js's parsed result.
   function deliveryMetadata(parsed) {
     return {
+      role: 'delivery',
+      code: parsed.reference,
+      baseOrder: parsed.orderNumber,
       reference: parsed.reference,
       orderNumber: parsed.orderNumber,
       deliveryType: parsed.type === 'part' ? 'Part Delivery' : 'Full Delivery',
       partNo: parsed.type === 'part' ? parsed.partNumber : ''
     };
+  }
+
+  // Everything a queued session needs to remember from its scan, from
+  // photo-roles.js's parseForRole() result: the role, the original scanned
+  // value, the base order, and - for a Delivery - its Full/Part details.
+  function sessionMetadata(parsed) {
+    if (parsed.role === 'delivery') return deliveryMetadata(parsed.delivery);
+    return { role: parsed.role, code: parsed.code, baseOrder: parsed.baseOrder, reference: '', orderNumber: parsed.baseOrder, deliveryType: '', partNo: '' };
   }
 
   // ---- storage --------------------------------------------------------------
@@ -150,7 +177,10 @@
 
       const record = {
         sessionId: session.sessionId,
-        reference: session.reference,
+        role: sessionRole(session),
+        code: sessionCode(session),
+        baseOrder: session.baseOrder || session.orderNumber,
+        reference: session.reference || '',
         orderNumber: session.orderNumber,
         deliveryType: session.deliveryType,
         partNo: session.partNo,
@@ -291,11 +321,14 @@
   // The sync engine. `api` talks to the Windows Photo Service and is injected
   // (the browser passes real fetch/XHR calls; tests pass fakes or a Node
   // client for a real test server):
-  //   checkService()                         -> { reachable, paired }
-  //   uploadPhoto({ reference, photoId, bytes, sha256 })
-  //                                          -> { ok } | { ok: false, error, needsPairing?, unreachable? }
-  //   completeSession({ sessionId, reference, photosSaved })
+  //   checkService()                         -> { reachable, paired, role }
+  //   uploadPhoto({ role, code, photoId, bytes, sha256 })
+  //                                          -> { ok } | { ok: false, error, needsPairing?, wrongRole?, unreachable? }
+  //   completeSession({ sessionId, role, code, photosSaved })
   //                                          -> same shape
+  // `role` is only the role the session was TAKEN as, sent so the PC can
+  // refuse it clearly if this iPad is now paired as something else - the PC
+  // always decides the role itself, from the pairing token.
   // `withLock(fn)` (optional) serialises sending across browser tabs - see
   // app.js, which passes the Web Locks API when the browser has it.
   function createSyncEngine({ store, api, onProgress = () => {}, withLock = (fn) => fn() }) {
@@ -315,7 +348,15 @@
 
     // Sends ONE session: every not-yet-uploaded photo in order, then the
     // session-complete report, then (only then) deletes it locally.
-    async function sendSession(session) {
+    async function sendSession(session, pairedRole) {
+      const role = sessionRole(session);
+      const code = sessionCode(session);
+      // Taken as one role, but this iPad has since been paired as another:
+      // never sent (the PC would refuse it anyway), never deleted.
+      if (pairedRole && pairedRole !== role) {
+        await failSession(session, STATUS.WRONG_ROLE, `Taken as ${role} photos, but this iPad is now paired for ${pairedRole} photos.`);
+        return { outcome: 'failed' };
+      }
       await store.updateSession(session.sessionId, { status: STATUS.SYNCING, lastAttemptAt: new Date().toISOString(), attempts: (session.attempts || 0) + 1 });
       const photos = await store.getPhotos(session.sessionId);
       if (photos.length === 0) {
@@ -327,8 +368,8 @@
       for (let i = 0; i < photos.length; i++) {
         const photo = photos[i];
         if (photo.uploaded) continue;
-        progress({ sessionId: session.sessionId, reference: session.reference, sending: i + 1, total: photos.length });
-        const result = await api.uploadPhoto({ reference: session.reference, photoId: photo.photoId, bytes: photo.bytes, sha256: photo.sha256 });
+        progress({ sessionId: session.sessionId, reference: code, sending: i + 1, total: photos.length });
+        const result = await api.uploadPhoto({ role, code, photoId: photo.photoId, bytes: photo.bytes, sha256: photo.sha256 });
         if (result.ok) {
           await store.markPhotoUploaded(photo.photoId);
           continue;
@@ -336,6 +377,10 @@
         if (result.needsPairing) {
           await failSession(session, STATUS.NEEDS_PAIRING, result.error);
           return { outcome: 'needs_pairing' };
+        }
+        if (result.wrongRole) {
+          await failSession(session, STATUS.WRONG_ROLE, result.error);
+          return { outcome: 'failed' };
         }
         if (result.unreachable) {
           // Lost the connection part-way: back to plain "waiting", nothing lost.
@@ -352,12 +397,16 @@
         return { outcome: 'failed' };
       }
 
-      progress({ sessionId: session.sessionId, reference: session.reference, completing: true });
-      const done = await api.completeSession({ sessionId: session.sessionId, reference: session.reference, photosSaved: photos.length });
+      progress({ sessionId: session.sessionId, reference: code, completing: true });
+      const done = await api.completeSession({ sessionId: session.sessionId, role, code, photosSaved: photos.length });
       if (!done.ok) {
         if (done.needsPairing) {
           await failSession(session, STATUS.NEEDS_PAIRING, done.error);
           return { outcome: 'needs_pairing' };
+        }
+        if (done.wrongRole) {
+          await failSession(session, STATUS.WRONG_ROLE, done.error);
+          return { outcome: 'failed' };
         }
         await failSession(session, done.unreachable ? STATUS.PENDING : STATUS.FAILED, done.error);
         return { outcome: done.unreachable ? 'unreachable' : 'failed' };
@@ -391,7 +440,7 @@
             let sent = 0;
             let failed = 0;
             for (const session of sessions) {
-              const r = await sendSession(session);
+              const r = await sendSession(session, service.role);
               if (r.outcome === 'sent') sent++;
               else if (r.outcome === 'failed') failed++;
               else return { outcome: r.outcome, sent, failed };
@@ -443,5 +492,5 @@
     };
   }
 
-  return { DB_NAME, STATUS, HIGH_USAGE_FRACTION, openStore, deliveryMetadata, sha256Hex, assessStorage, formatBytes, createSyncEngine, installAutoSync };
+  return { DB_NAME, STATUS, HIGH_USAGE_FRACTION, openStore, deliveryMetadata, sessionMetadata, sessionRole, sessionCode, sha256Hex, assessStorage, formatBytes, createSyncEngine, installAutoSync };
 });

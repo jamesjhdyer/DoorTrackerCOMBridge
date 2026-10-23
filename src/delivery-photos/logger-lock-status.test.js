@@ -19,7 +19,7 @@ test('the logger writes a dated file and redacts secrets and paths', () => {
     const secret = require('node:crypto').randomBytes(24).toString('base64url'); // stands in for any secret value worth redacting
     const logger = createLogger({ dir, secrets: [secret], roots: [env.share], now: () => new Date('2026-01-15T10:00:00Z') });
     logger.info(`internal detail containing ${secret}`);
-    logger.error(`could not read ${nodePath.join(env.share, '5698-DELIV', 'photo-001.jpg')}`);
+    logger.error(`could not read ${nodePath.join(env.share, '5698', '001-DELIV.jpg')}`);
 
     const file = nodePath.join(dir, 'delivery-photos-2026-01-15.log');
     const text = fs.readFileSync(file, 'utf8');

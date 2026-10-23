@@ -1,7 +1,9 @@
 // Parses and validates a delivery reference such as "5698-DELIV",
 // "5698-P-DELIV", "5698-P2-DELIV" or "5626-2-P3-DELIV" - this is the ENTIRE
-// content of the Data Matrix on a delivery note (no website URL, no domain),
-// and is also the exact folder name the photographs end up filed in.
+// content of the Data Matrix on a delivery note (no website URL, no domain).
+// Delivery photographs are filed under the ORDER number only (e.g. folder
+// 5698 for every one of these) - see photo-roles.js; the full reference
+// survives only in the Google Sheet tracking event (tracking.js).
 //
 // This file works unchanged in both the iPad web app (loaded as a plain
 // <script>, no bundler) and the Windows worker (loaded with require()) - see
@@ -44,7 +46,7 @@
 
   // Returns { ok: true, reference, orderNumber, type: 'standard' | 'part', partNumber }
   // or { ok: false, reason }. `reference` is always the canonical (upper-case)
-  // form - also the exact folder name to file photographs under.
+  // form.
   function parse(input) {
     if (typeof input !== 'string') return { ok: false, reason: 'Not a text value.' };
     const trimmed = input.trim();

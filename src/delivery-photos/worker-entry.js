@@ -9,6 +9,8 @@
 //
 // Talks to the parent over the fork's own IPC channel only:
 //   parent -> worker   { cmd: 'reload' }                  re-read settings and (re)start the servers
+//             worker    { cmd: 'generate-pairing-code', role, name }   a one-time code tied to that photo role
+//             worker    { cmd: 'revoke-device', deviceId } / { cmd: 'revoke-devices' }
 //             worker    { cmd: 'stop' }                    stop the servers, then this process exits
 //   worker  -> parent   { event: 'status', status }        the current status.json contents, on every change
 //   worker  -> parent   { event: 'tracking-pending' }      a delivery-photo tracking event was just queued (see tracking.js) -
@@ -32,7 +34,7 @@ const { advertise } = require('./mdns');
 const { startServers } = require('./http-server');
 const { runInWorker } = require('./worker-runner');
 const { PairingManager } = require('./auth');
-const { ConcurrencyLimiter } = require('./concurrency');
+const { ConcurrencyLimiter, KeyedMutex } = require('./concurrency');
 
 const DEV_OPTIONS = {
   platform: process.env.DELIVERY_PHOTOS_PLATFORM || undefined // test-only: exercise Windows path rules on any OS
@@ -63,8 +65,19 @@ class Runtime {
     // devices are already persisted to disk (see auth.js) and reload() must
     // never un-pair every iPad just because a setting changed, and a
     // pairing code in progress on screen must survive an unrelated reload.
-    this.pairing = new PairingManager({ devicesPath: devicesPath() });
+    // Every pairing change (an iPad paired, one removed, all reset) is
+    // reported straight away, so the Windows app's device list is current.
+    this.pairing = new PairingManager({ devicesPath: devicesPath(), onChange: () => this.reportDevices() });
     this.limiter = new ConcurrencyLimiter();
+    // One archive save per order folder at a time (see concurrency.js) -
+    // like the limiter, shared across reload()s.
+    this.orderLocks = new KeyedMutex();
+  }
+
+  // The paired-iPad list for the Windows app: name, role and pairing date
+  // only (see auth.js's listDevices) - never a token or token hash.
+  reportDevices() {
+    return this.report({ pairedDevices: this.pairing.pairedCount(), devices: this.pairing.listDevices() });
   }
 
   report(patch) {
@@ -145,6 +158,7 @@ class Runtime {
         spoolDir: spoolDir(),
         pairing: this.pairing,
         limiter: this.limiter,
+        orderLocks: this.orderLocks,
         queueDir: trackingQueueDir(),
         filedLogDir: filedLogDir()
       });
@@ -163,7 +177,8 @@ class Runtime {
       photoRoot: config.photoRoot,
       startedAt: new Date().toISOString(),
       lastError: '',
-      pairedDevices: this.pairing.pairedCount()
+      pairedDevices: this.pairing.pairedCount(),
+      devices: this.pairing.listDevices()
     });
     this.logger.info(`Delivery Photos running: https://${config.hostname}:${config.port}/`);
 
@@ -183,18 +198,22 @@ class Runtime {
     if (this.lock) this.lock.release();
   }
 
-  // The two pairing-management actions the Electron UI's "Pair a new iPad"
-  // and "Reset pairing" buttons drive (see main.js) - neither touches the
-  // running servers, settings, or network/certificate setup at all, only
-  // the pairing state kept in this.pairing (see auth.js).
-  generatePairingCode() {
-    const { code, expiresAt } = this.pairing.generateCode();
-    return { code, expiresAt };
+  // The pairing-management actions the Electron UI's "Pair a New iPad",
+  // "Remove" and "Reset Pairing" buttons drive (see main.js) - none touches
+  // the running servers, settings, or network/certificate setup at all,
+  // only the pairing state kept in this.pairing (see auth.js). The role is
+  // chosen HERE, on the PC, and fixed into the code; generateCode() throws
+  // for anything but delivery/bench/ironmongery.
+  generatePairingCode({ role, name } = {}) {
+    return this.pairing.generateCode({ role, name });
+  }
+
+  revokeDevice(deviceId) {
+    return this.pairing.revokeDevice(deviceId);
   }
 
   revokeDevices() {
     this.pairing.revokeAll();
-    this.report({ pairedDevices: 0 });
   }
 }
 
@@ -224,8 +243,17 @@ async function main() {
     if (message.cmd === 'reload') runtime.reload().catch(fatal('Could not apply settings'));
     else if (message.cmd === 'stop') runtime.stop().then(() => process.exit(0));
     else if (message.cmd === 'generate-pairing-code') {
-      const { code, expiresAt } = runtime.generatePairingCode();
-      if (process.send) process.send({ event: 'pairing-code', requestId: message.requestId, code, expiresAt });
+      let reply;
+      try {
+        const { code, expiresAt, role, name } = runtime.generatePairingCode({ role: message.role, name: message.name });
+        reply = { code, expiresAt, role, name };
+      } catch (err) {
+        reply = { error: err.message };
+      }
+      if (process.send) process.send({ event: 'pairing-code', requestId: message.requestId, ...reply });
+    } else if (message.cmd === 'revoke-device') {
+      const removed = runtime.revokeDevice(String(message.deviceId || ''));
+      if (process.send) process.send({ event: 'device-revoked', requestId: message.requestId, removed });
     } else if (message.cmd === 'revoke-devices') {
       runtime.revokeDevices();
       if (process.send) process.send({ event: 'devices-revoked', requestId: message.requestId });

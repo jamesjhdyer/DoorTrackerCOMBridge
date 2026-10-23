@@ -44,9 +44,15 @@ function paths(dir) {
 }
 
 function randomSerial() {
-  // Must be a positive integer in hex, per X.509 - a leading 00 avoids it
-  // ever being misread as negative (high bit set) by a strict parser.
-  return `00${forge.util.bytesToHex(forge.random.getBytesSync(16))}`;
+  // Must be a positive integer in minimal DER form, per X.509. The first
+  // byte is forced into 0x01-0x7f: never negative (high bit clear), and
+  // never a leading zero byte. (A fixed "00" prefix used to be added
+  // instead - whenever the first random byte was itself 0x00, forge kept a
+  // redundant zero byte, which OpenSSL rejects as "illegal padding": about
+  // one certificate in 128 could not be loaded at all.)
+  const bytes = forge.random.getBytesSync(16);
+  const first = (bytes.charCodeAt(0) & 0x7f) || 0x01;
+  return forge.util.bytesToHex(String.fromCharCode(first) + bytes.slice(1));
 }
 
 function generateCa() {
@@ -225,4 +231,4 @@ function randomUuidLike() {
   return require('node:crypto').randomUUID().toUpperCase();
 }
 
-module.exports = { ensureCertificates, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames, CA_COMMON_NAME };
+module.exports = { ensureCertificates, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames, randomSerial, CA_COMMON_NAME };

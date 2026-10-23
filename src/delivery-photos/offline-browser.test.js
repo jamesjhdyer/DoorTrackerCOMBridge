@@ -132,7 +132,7 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     // ---- 1. First visit, on the workshop Wi-Fi: pair, and the shell is cached.
     await page.goto(`${origin}/`);
     await page.waitForSelector('#pairing-screen:not([hidden])');
-    await page.fill('#pairing-code-input', pairing.generateCode().code);
+    await page.fill('#pairing-code-input', pairing.generateCode({ role: 'delivery' }).code);
     await page.click('#pairing-form button[type=submit]');
     await page.waitForSelector('#scan-screen:not([hidden])');
     await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30000 });
@@ -142,13 +142,14 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
       return (await cache.keys()).map((r) => new URL(r.url).pathname).sort();
     });
     assert.ok(cached.includes('/vendor/zxing/zxing_reader.wasm'), 'the Data Matrix decoder is cached on the device');
-    assert.ok(cached.includes('/') && cached.includes('/app.js') && cached.includes('/offline-queue.js') && cached.includes('/reference.js'));
+    assert.ok(cached.includes('/') && cached.includes('/app.js') && cached.includes('/offline-queue.js') && cached.includes('/reference.js') && cached.includes('/photo-roles.js'));
+    assert.equal(await page.textContent('#scan-screen [data-role-heading]'), 'DELIVERY PHOTOS');
     await page.waitForFunction(() => /connected/.test(document.querySelector('#scan-screen [data-conn-text]').textContent));
 
     // ---- 2. The existing online workflow, unchanged: filed and verified straight away.
     const onlineHeading = await captureDelivery(page, '5701-DELIV', 2);
     assert.equal(onlineHeading, 'Photographs filed successfully');
-    assert.deepEqual(files('5701-DELIV'), ['photo-001.jpg', 'photo-002.jpg']);
+    assert.deepEqual(files('5701'), ['001-DELIV.jpg', '002-DELIV.jpg']);
     assert.equal(listPendingEvents(queueDir).length, 1);
     assert.deepEqual(await queuedOnPage(page), [], 'nothing left on the device after a verified online delivery');
     await page.click('#scan-next-button');
@@ -204,9 +205,9 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     assert.match(await page.textContent('#result-detail'), /Waiting to send to company drive/);
     let queued = await queuedOnPage(page);
     assert.equal(queued.length, 1);
-    assert.deepEqual([queued[0].reference, queued[0].orderNumber, queued[0].deliveryType, queued[0].partNo, queued[0].photoCount], ['5698-P2-DELIV', '5698', 'Part Delivery', 2, 3]);
+    assert.deepEqual([queued[0].role, queued[0].code, queued[0].baseOrder, queued[0].reference, queued[0].orderNumber, queued[0].deliveryType, queued[0].partNo, queued[0].photoCount], ['delivery', '5698-P2-DELIV', '5698', '5698-P2-DELIV', '5698', 'Part Delivery', 2, 3]);
     assert.ok(queued[0].photos.every((p) => p.size > 1000 && !p.uploaded), 'every photo stored with its data');
-    assert.deepEqual(files('5698-P2-DELIV'), []);
+    assert.deepEqual(files('5698'), []);
     assert.equal(listPendingEvents(queueDir).length, 1, 'no new tracking event');
     assert.equal(countOrdersFiledOn(filedLogDir), 1, 'Orders filed today ignores the iPad-only delivery');
 
@@ -236,7 +237,8 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     // ---- 5. Back on the workshop Wi-Fi: coming back to the foreground sends it.
     await startService();
     await page.evaluate(() => window.dispatchEvent(new Event('focus')));
-    await waitFor(() => files('5698-P2-DELIV').length === 3, { message: 'the queued photos to reach the drive' });
+    await waitFor(() => files('5698').length === 3, { message: 'the queued photos to reach the drive' });
+    assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-DELIV.jpg', '003-DELIV.jpg']);
     await waitFor(async () => (await queuedOnPage(page)).length === 0, { message: 'the local copy to be removed' });
     const events = listPendingEvents(queueDir);
     assert.equal(events.length, 2);
@@ -250,6 +252,147 @@ test('offline app shell, offline scanning, offline capture, and foreground sync 
     for (const url of requests) assert.ok(url.startsWith(`${origin}/`) || url.startsWith(`blob:${origin}/`) || url.startsWith('data:'), `unexpected request to ${url}`);
 
     await context.close();
+  } finally {
+    await browser.close();
+    if (handle) await stopService();
+    env.cleanup();
+  }
+});
+
+test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, photos named by the PC, offline queue', { timeout: 180000 }, async (t) => {
+  const env = makeEnv();
+  const credentials = ensureCertificates(nodePath.join(env.home, 'certs'), 'localhost');
+  const spki = createHash('sha256').update(new X509Certificate(credentials.cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+  const browser = await launchChrome(spki);
+  if (!browser) {
+    env.cleanup();
+    t.skip('Google Chrome is not installed on this machine - the browser-level offline test needs it.');
+    return;
+  }
+
+  const port = PORT + 2;
+  const config = { hostname: 'localhost', port, photoRoot: env.share, maxPhotoBytes: 18 * 1000 * 1000, operationTimeoutSeconds: 20, minFreeGb: 0 };
+  const pairing = new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
+  const queueDir = nodePath.join(env.home, 'tracking-queue');
+  const filedLogDir = nodePath.join(env.home, 'filed-sessions');
+  let handle = null;
+  const startService = async () => {
+    handle = startServers({ config, credentials, runWorker: runInWorker, logger: quietLogger(), spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
+    await handle.listen();
+  };
+  const stopService = async () => {
+    await handle.close();
+    handle = null;
+  };
+  const origin = `https://localhost:${port}`;
+  const files = (folder) => {
+    try {
+      return fs.readdirSync(nodePath.join(env.share, folder)).sort();
+    } catch {
+      return [];
+    }
+  };
+
+  async function pairedPage(role) {
+    const context = await browser.newContext();
+    const page = await context.newPage();
+    await page.goto(`${origin}/`);
+    await page.waitForSelector('#pairing-screen:not([hidden])');
+    assert.equal(await page.isVisible('#pairing-skip-button'), false, 'a never-paired iPad has no role to take photos as yet');
+    await page.fill('#pairing-code-input', pairing.generateCode({ role }).code);
+    await page.click('#pairing-form button[type=submit]');
+    await page.waitForSelector('#scan-screen:not([hidden])');
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30000 });
+    return { context, page };
+  }
+
+  async function capture(page, code, photos) {
+    if (await page.isHidden('#manual-entry-form')) await page.click('#manual-entry-button');
+    await page.fill('#manual-entry-input', code);
+    await page.click('#manual-entry-form button[type=submit]');
+    await page.waitForSelector('#capture-screen:not([hidden])');
+    const header = { role: await page.textContent('#capture-role'), label: await page.textContent('#reference-label'), sub: await page.textContent('#reference-sub') };
+    await page.waitForFunction(() => document.getElementById('capture-video').videoWidth > 0);
+    for (let i = 1; i <= photos; i++) {
+      await page.click('#shutter-button');
+      await page.waitForFunction((n) => document.querySelectorAll('#thumbnails .thumb').length === n, i);
+    }
+    await page.click('#done-button');
+    await page.waitForSelector('#result-screen:not([hidden])', { timeout: 30000 });
+    return { heading: await page.textContent('#result-heading'), header };
+  }
+
+  try {
+    await startService();
+    fs.mkdirSync(nodePath.join(env.share, '5698'));
+    fs.writeFileSync(nodePath.join(env.share, '5698', '001-DELIV.jpg'), 'earlier delivery photo');
+
+    // ---- Bench: the role is obvious, a delivery code is refused, a door label files as -BENCH.
+    const bench = await pairedPage('bench');
+    assert.equal(await bench.page.textContent('#scan-screen [data-role-heading]'), 'BENCH PHOTOS');
+    assert.equal(await bench.page.title(), 'Bench Photos');
+    assert.match(await bench.page.textContent('#scan-message'), /Scan a door or frame label/);
+    await bench.page.click('#manual-entry-button');
+    await bench.page.fill('#manual-entry-input', '5698-DELIV');
+    await bench.page.click('#manual-entry-form button[type=submit]');
+    assert.equal(await bench.page.isVisible('#scan-screen'), true, 'a delivery code is not accepted on a Bench iPad');
+    assert.match(await bench.page.evaluate(() => document.getElementById('manual-entry-input').validationMessage), /door or frame label/);
+
+    const online = await capture(bench.page, '5698-D-07', 2);
+    assert.equal(online.heading, 'Photographs filed successfully');
+    assert.deepEqual(online.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D-07', sub: 'Order: 5698 · Photos will save under order 5698' });
+    assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-BENCH.jpg', '003-BENCH.jpg']);
+    assert.deepEqual(listPendingEvents(queueDir), [], 'no Delivery Sheet event for Bench photos');
+    await bench.page.click('#scan-next-button');
+
+    // ---- Ironmongery: the order-number box is open straight away; "5626-2" files as -IRN.
+    const irn = await pairedPage('ironmongery');
+    assert.equal(await irn.page.textContent('#scan-screen [data-role-heading]'), 'IRONMONGERY PHOTOS');
+    assert.equal(await irn.page.isVisible('#manual-entry-form'), true);
+    assert.equal(await irn.page.textContent('#manual-entry-label'), 'Order number');
+    const irnOnline = await capture(irn.page, '5626-2', 1);
+    assert.deepEqual(irnOnline.header, { role: 'IRONMONGERY PHOTOS', label: 'Order: 5626-2', sub: 'Photos will save under order 5626-2' });
+    assert.deepEqual(files('5626-2'), ['001-IRN.jpg']);
+    await irn.page.click('#scan-next-button');
+
+    // ---- Offline: both iPads save on the device; the pending list shows role, order and count.
+    await stopService();
+    for (const p of [bench.page, irn.page]) {
+      await p.reload();
+      await p.waitForSelector('#scan-screen:not([hidden])', { timeout: 30000 });
+    }
+    assert.equal(await bench.page.textContent('#scan-screen [data-role-heading]'), 'BENCH PHOTOS', 'the role is remembered away from the workshop');
+    assert.equal((await capture(bench.page, '5698-F-02', 4)).heading, 'Saved on this iPad');
+    assert.equal((await capture(irn.page, '5626-2', 3)).heading, 'Saved on this iPad');
+
+    await bench.page.click('#scan-next-button');
+    await bench.page.click('#scan-screen [data-pending-banner]');
+    await bench.page.waitForSelector('#pending-screen:not([hidden])');
+    const benchPending = await bench.page.textContent('#pending-list');
+    assert.match(benchPending, /Bench/);
+    assert.match(benchPending, /5698/);
+    assert.match(benchPending, /4 photos/);
+    assert.match(benchPending, /Waiting for workshop network/);
+    await irn.page.click('#scan-next-button');
+    await irn.page.click('#scan-screen [data-pending-banner]');
+    await irn.page.waitForSelector('#pending-screen:not([hidden])');
+    const irnPending = await irn.page.textContent('#pending-list');
+    assert.match(irnPending, /Ironmongery/);
+    assert.match(irnPending, /5626-2/);
+    assert.match(irnPending, /3 photos/);
+
+    // ---- Back on the workshop Wi-Fi: each sends, under the role the PC holds for it.
+    await startService();
+    for (const p of [bench.page, irn.page]) await p.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => files('5698').length === 7 && files('5626-2').length === 4, { message: 'the queued photos to reach the drive' });
+    assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-BENCH.jpg', '003-BENCH.jpg', '004-BENCH.jpg', '005-BENCH.jpg', '006-BENCH.jpg', '007-BENCH.jpg']);
+    assert.deepEqual(files('5626-2'), ['001-IRN.jpg', '002-IRN.jpg', '003-IRN.jpg', '004-IRN.jpg']);
+    for (const p of [bench.page, irn.page]) await p.waitForFunction(() => /Nothing waiting/.test(document.querySelector('#pending-summary').textContent), null, { timeout: 30000 });
+    assert.deepEqual(listPendingEvents(queueDir), []);
+    assert.equal(countOrdersFiledOn(filedLogDir), 0);
+
+    await bench.context.close();
+    await irn.context.close();
   } finally {
     await browser.close();
     if (handle) await stopService();

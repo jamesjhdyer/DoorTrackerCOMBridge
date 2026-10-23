@@ -18,15 +18,15 @@
 
 <!-- ============================ PAIRING ============================ -->
 <section id="pairing-screen" class="screen" hidden>
-  <h1 class="brand">DELIVERY PHOTOS</h1>
+  <h1 class="brand" data-role-heading>DELIVERY PHOTOS</h1>
 
   <div class="connection-strip" data-connection-strip>
     <span class="conn-dot" data-conn-dot></span>
     <span data-conn-text>Checking the workshop Photo Service…</span>
   </div>
   <button type="button" class="pending-banner" data-pending-banner hidden></button>
-  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
-  <p class="scan-instruction">This iPad needs to be paired with the PC once before it can upload photos.</p>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending photos can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
+  <p class="scan-instruction" id="pairing-intro">This iPad needs to be paired with the PC once before it can upload photos.</p>
 
   <form id="pairing-form" class="manual-entry-form">
     <label for="pairing-code-input">Pairing code, from the PC</label>
@@ -40,14 +40,14 @@
 
 <!-- ============================= SCAN ============================= -->
 <section id="scan-screen" class="screen" hidden>
-  <h1 class="brand">DELIVERY PHOTOS</h1>
+  <h1 class="brand" data-role-heading>DELIVERY PHOTOS</h1>
 
   <div class="connection-strip" data-connection-strip>
     <span class="conn-dot" data-conn-dot></span>
     <span data-conn-text>Checking the workshop Photo Service…</span>
   </div>
   <button type="button" class="pending-banner" data-pending-banner hidden></button>
-  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending photos can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
   <p class="scan-instruction" id="scan-message">Point the camera at the delivery note code.</p>
 
   <div class="camera-frame">
@@ -61,7 +61,7 @@
   <button type="button" id="manual-entry-button" class="link-button">Type the code instead</button>
 
   <form id="manual-entry-form" class="manual-entry-form" hidden>
-    <label for="manual-entry-input">Delivery code</label>
+    <label for="manual-entry-input" id="manual-entry-label">Delivery code</label>
     <input id="manual-entry-input" type="text" inputmode="text" autocapitalize="characters" autocomplete="off" placeholder="5698-DELIV" />
     <div class="manual-entry-buttons">
       <button type="button" id="manual-entry-cancel" class="secondary-button">Cancel</button>
@@ -74,6 +74,7 @@
 <section id="capture-screen" class="screen" hidden>
   <header class="capture-header">
     <div>
+      <div class="capture-role" id="capture-role">DELIVERY PHOTOS</div>
       <div class="reference-label" id="reference-label">5698-DELIV</div>
       <div class="reference-sub" id="reference-sub"></div>
     </div>
@@ -115,14 +116,14 @@
 <!-- ============================ PENDING ============================ -->
 <section id="pending-screen" class="screen" hidden>
   <header class="capture-header">
-    <h2 class="pending-title">Pending deliveries</h2>
+    <h2 class="pending-title" id="pending-title">Pending deliveries</h2>
     <button type="button" id="pending-back-button" class="link-button">Back</button>
   </header>
   <div class="connection-strip" data-connection-strip>
     <span class="conn-dot" data-conn-dot></span>
     <span data-conn-text>Checking the workshop Photo Service…</span>
   </div>
-  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending deliveries can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
+  <p class="warning" data-auth-banner hidden>Pair this iPad again before pending photos can be sent. <button type="button" class="link-button inline-link" data-pair-now>Pair now</button></p>
   <p id="pending-summary" class="scan-instruction"></p>
   <button type="button" id="send-pending-button" class="primary-button">SEND PENDING NOW</button>
   <ul id="pending-list" class="pending-list"></ul>
@@ -147,6 +148,7 @@
 
 <script src="vendor/zxing/zxing-reader.js"></script>
 <script src="reference.js"></script>
+<script src="photo-roles.js"></script>
 <script src="camera.js"></script>
 <script src="scanner.js"></script>
 <script src="offline-queue.js"></script>

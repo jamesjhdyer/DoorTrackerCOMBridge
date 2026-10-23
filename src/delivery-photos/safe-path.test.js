@@ -14,7 +14,7 @@
 const test = require('node:test');
 const assert = require('node:assert/strict');
 
-const { classifyRoot, checkSegment, normalizeRootInput, assertDeliveryFolderName, UnsafePathError } = require('./safe-path');
+const { classifyRoot, checkSegment, normalizeRootInput, assertOrderFolderName, assertPhotoFileName, NUMBERED_FILE_PATTERN, UnsafePathError } = require('./safe-path');
 
 const WIN = 'win32';
 
@@ -96,11 +96,25 @@ test('checkSegment rejects path separators, traversal, reserved Windows device n
   assert.equal(checkSegment('5698-DELIV'), null);
 });
 
-test('assertDeliveryFolderName accepts only the exact grammar, uppercase, single hyphens', () => {
-  for (const good of ['5698-DELIV', '5698-P-DELIV', '5698-P2-DELIV', '5626-2-P3-DELIV']) {
-    assert.equal(assertDeliveryFolderName(good), good);
+test('assertOrderFolderName accepts only a base order number: digit groups joined by single hyphens', () => {
+  for (const good of ['5698', '5626-2', '12-3-4']) {
+    assert.equal(assertOrderFolderName(good), good);
   }
-  for (const bad of ['5698-deliv', '../5698-DELIV', '5698--DELIV', '']) {
-    assert.throws(() => assertDeliveryFolderName(bad), UnsafePathError);
+  for (const bad of ['5698-DELIV', '5698-D-01', '../5698', '5698/..', '5698\\x', '5626--2', '-5698', '5698-', '5698.', 'CON', 'NUL', '', '.', '..']) {
+    assert.throws(() => assertOrderFolderName(bad), UnsafePathError, JSON.stringify(bad));
   }
+});
+
+test('assertPhotoFileName accepts only <number>-<DELIV|BENCH|IRN>.jpg, upper-case', () => {
+  for (const good of ['001-DELIV.jpg', '002-BENCH.jpg', '003-IRN.jpg', '1000-DELIV.jpg', '999999-IRN.jpg']) {
+    assert.equal(assertPhotoFileName(good), good);
+  }
+  for (const bad of ['photo-001.jpg', '01-DELIV.jpg', '001-deliv.jpg', '001-OTHER.jpg', '001-DELIV.jpeg', '001-DELIV.JPG', '001-DELIV.jpg.exe', '../001-DELIV.jpg', '001-DELIV', '']) {
+    assert.throws(() => assertPhotoFileName(bad), UnsafePathError, JSON.stringify(bad));
+  }
+});
+
+test('NUMBERED_FILE_PATTERN: names that claim a sequence number, in any letter case; nothing else', () => {
+  for (const claims of ['001-DELIV.jpg', '004-bench.JPG', '010-IRN.jpeg', '1000-DELIV.jpg', '005-OTHER.jpg']) assert.match(claims, NUMBERED_FILE_PATTERN);
+  for (const other of ['photo-001.jpg', 'notes.txt', '01-DELIV.jpg', '001-DELIV.png', 'Thumbs.db', '001-DELIV.jpg.part', '001.jpg']) assert.doesNotMatch(other, NUMBERED_FILE_PATTERN);
 });

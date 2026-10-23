@@ -908,6 +908,8 @@ const dp = {
   openLogsBtn: document.getElementById('dp-open-logs-btn'),
   testResult: document.getElementById('dp-test-result'),
   pairBtn: document.getElementById('dp-pair-btn'),
+  pairName: document.getElementById('dp-pair-name'),
+  devicesBody: document.getElementById('dp-devices-body'),
   revokeBtn: document.getElementById('dp-revoke-btn'),
   pairingResult: document.getElementById('dp-pairing-result'),
   hostnameInput: document.getElementById('dp-hostname-input'),
@@ -938,6 +940,7 @@ function renderDeliveryPhotosStatus(status) {
     dp.photoRoot.textContent = '-';
     dp.pairedCount.textContent = status && status.pairedDevices ? status.pairedDevices : 0;
     dp.lastError.textContent = (status && status.lastError) || '-';
+    renderPairedDevices(status && status.devices);
     return;
   }
 
@@ -951,6 +954,44 @@ function renderDeliveryPhotosStatus(status) {
   dp.photoRoot.textContent = status.photoRoot || '-';
   dp.pairedCount.textContent = status.pairedDevices || 0;
   dp.lastError.textContent = status.lastError || '-';
+  renderPairedDevices(status.devices);
+}
+
+const DP_ROLE_LABELS = { delivery: 'Delivery', bench: 'Bench', ironmongery: 'Ironmongery' };
+const dpPairedFormat = new Intl.DateTimeFormat('en-GB', { day: 'numeric', month: 'short', year: 'numeric', hour: '2-digit', minute: '2-digit' });
+
+// The worker's paired-iPad list (name, role, paired date - never a token),
+// with a per-iPad Remove. `devices` is undefined until the worker has
+// reported it at least once.
+function renderPairedDevices(devices) {
+  dp.devicesBody.innerHTML = '';
+  if (!Array.isArray(devices) || devices.length === 0) {
+    const row = dp.devicesBody.insertRow();
+    const cell = row.insertCell();
+    cell.colSpan = 4;
+    cell.textContent = Array.isArray(devices) ? 'No iPads paired yet.' : '-';
+    return;
+  }
+  for (const device of devices) {
+    const row = dp.devicesBody.insertRow();
+    row.insertCell().textContent = device.name || 'Unnamed iPad';
+    const roleCell = row.insertCell();
+    roleCell.className = 'dp-role-badge';
+    roleCell.textContent = DP_ROLE_LABELS[device.role] || device.role;
+    row.insertCell().textContent = device.pairedAt ? dpPairedFormat.format(new Date(device.pairedAt)) : 'before roles were added';
+    const remove = document.createElement('button');
+    remove.textContent = 'Remove';
+    remove.addEventListener('click', async () => {
+      if (!confirm(`Un-pair "${device.name || 'this iPad'}" (${DP_ROLE_LABELS[device.role] || device.role})? It will need a new pairing code before it can upload photos again. Photos already saved on that iPad stay on it.`)) return;
+      remove.disabled = true;
+      const result = await window.deliveryPhotos.revokeDevice(device.id);
+      if (!result.ok) {
+        remove.disabled = false;
+        alert(result.error);
+      }
+    });
+    row.insertCell().appendChild(remove);
+  }
 }
 
 dp.startBtn.addEventListener('click', async () => {
@@ -992,17 +1033,25 @@ dp.testStorageBtn.addEventListener('click', async () => {
 });
 
 dp.pairBtn.addEventListener('click', async () => {
-  dp.pairBtn.disabled = true;
+  const chosen = document.querySelector('input[name="dp-pair-role"]:checked');
   dp.pairingResult.hidden = false;
+  if (!chosen) {
+    dp.pairingResult.textContent = 'Choose a role first: Delivery, Bench or Ironmongery.';
+    return;
+  }
+  dp.pairBtn.disabled = true;
   dp.pairingResult.textContent = 'Generating a pairing code…';
   try {
-    const result = await window.deliveryPhotos.generatePairingCode();
+    const result = await window.deliveryPhotos.generatePairingCode({ role: chosen.value, name: dp.pairName.value });
     if (!result.ok) {
       dp.pairingResult.textContent = `[FAIL] ${result.error}`;
       return;
     }
     const minutesLeft = Math.round((result.expiresAt - Date.now()) / 60000);
-    dp.pairingResult.textContent = `Pairing code: ${result.code}\n\nOn the iPad: open the Delivery Photos page, choose "Pair this iPad", and type this code in. Valid for about ${minutesLeft} minutes, and for one iPad only - generate a new code for each additional iPad.`;
+    const roleLabel = DP_ROLE_LABELS[result.role] || result.role;
+    dp.pairingResult.textContent = `Pairing code: ${result.code}\nRole: ${roleLabel.toUpperCase()}  ·  Device: ${result.name}\n\nOn the iPad: open the Photos page, and type this code in where it asks for a pairing code. That iPad will then be a ${roleLabel} iPad until it is removed here. Valid for about ${minutesLeft} minutes, and for one iPad only - generate a new code for each additional iPad.`;
+    dp.pairName.value = '';
+    for (const radio of document.querySelectorAll('input[name="dp-pair-role"]')) radio.checked = false;
   } finally {
     dp.pairBtn.disabled = false;
   }
