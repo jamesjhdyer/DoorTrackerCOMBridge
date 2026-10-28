@@ -545,9 +545,9 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     assert.equal(await bench.page.isVisible('#scan-screen'), true, 'a delivery code is not accepted on a Bench iPad');
     assert.match(await bench.page.evaluate(() => document.getElementById('manual-entry-input').validationMessage), /door or frame label/);
 
-    const online = await capture(bench.page, '5698-D-07', 2);
+    const online = await capture(bench.page, '5698-D', 2);
     assert.equal(online.heading, 'Photographs filed successfully');
-    assert.deepEqual(online.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D-07', sub: 'Order: 5698 · Photos will save under order 5698' });
+    assert.deepEqual(online.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D', sub: 'Order: 5698 · Photos will save under order 5698' });
     assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-BENCH.jpg', '003-BENCH.jpg']);
     assert.deepEqual(listPendingEvents(queueDir), [], 'no Delivery Sheet event for Bench photos');
     await bench.page.click('#scan-next-button');
@@ -569,7 +569,7 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
       await p.waitForSelector('#scan-screen:not([hidden])', { timeout: 30000 });
     }
     assert.equal(await bench.page.textContent('#scan-screen [data-role-heading]'), 'BENCH PHOTOS', 'the role is remembered away from the workshop');
-    assert.equal((await capture(bench.page, '5698-F-02', 4)).heading, 'Saved on this iPad');
+    assert.equal((await capture(bench.page, '5698-F', 4)).heading, 'Saved on this iPad');
     assert.equal((await capture(irn.page, '5626-2', 3)).heading, 'Saved on this iPad');
     await assertQueuedPhotosDistinct(bench.page);
     await assertQueuedPhotosDistinct(irn.page);
@@ -776,7 +776,7 @@ test('QR Codes and Data Matrix codes scanned through the camera behave identical
 
     // ---- Delivery: nonsense and another role's code are refused; DM and QR file the same.
     await scanRefused(delivery.page, 'QRCode', 'HELLO', 'Delivery');
-    await scanRefused(delivery.page, 'QRCode', '5698-D-01', 'Delivery');
+    await scanRefused(delivery.page, 'QRCode', '5698-D', 'Delivery');
     const dmDeliv = await scanAndCapture(delivery.page, 'DataMatrix', '5698-DELIV', 1);
     const qrDeliv = await scanAndCapture(delivery.page, 'QRCode', '5698-DELIV', 1);
     assert.equal(dmDeliv.heading, 'Photographs filed successfully');
@@ -792,15 +792,16 @@ test('QR Codes and Data Matrix codes scanned through the camera behave identical
     // ---- Bench: a delivery code in a QR Code is refused; door/frame labels in either format file as -BENCH.
     await scanRefused(bench.page, 'QRCode', '5698-DELIV', 'Bench');
     await scanRefused(bench.page, 'DataMatrix', '5698', 'Bench');
-    const dmDoor = await scanAndCapture(bench.page, 'DataMatrix', '5698-D-01', 1);
-    const qrDoor = await scanAndCapture(bench.page, 'QRCode', '5698-D-01', 1);
-    assert.deepEqual(dmDoor, { heading: 'Photographs filed successfully', header: { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D-01', sub: 'Order: 5698 · Photos will save under order 5698' } });
+    await scanRefused(bench.page, 'QRCode', '5698-D-01', 'Bench'); // the old numbered label format
+    const dmDoor = await scanAndCapture(bench.page, 'DataMatrix', '5698-D', 1);
+    const qrDoor = await scanAndCapture(bench.page, 'QRCode', '5698-D', 1);
+    assert.deepEqual(dmDoor, { heading: 'Photographs filed successfully', header: { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D', sub: 'Order: 5698 · Photos will save under order 5698' } });
     assert.deepEqual(qrDoor, dmDoor);
-    const qrFrame = await scanAndCapture(bench.page, 'QRCode', '5626-2-F-03', 1);
-    assert.deepEqual(qrFrame.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5626-2-F-03', sub: 'Order: 5626-2 · Photos will save under order 5626-2' });
+    const qrFrame = await scanAndCapture(bench.page, 'QRCode', '5626-2-F', 1);
+    assert.deepEqual(qrFrame.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5626-2-F', sub: 'Order: 5626-2 · Photos will save under order 5626-2' });
 
     // ---- Ironmongery: an order number in either format files as -IRN.
-    await scanRefused(irn.page, 'QRCode', '5626-2-F-03', 'Ironmongery');
+    await scanRefused(irn.page, 'QRCode', '5626-2-F', 'Ironmongery');
     const dmOrder = await scanAndCapture(irn.page, 'DataMatrix', '5698', 1);
     const qrOrder = await scanAndCapture(irn.page, 'QRCode', '5698', 1);
     assert.deepEqual(dmOrder, { heading: 'Photographs filed successfully', header: { role: 'IRONMONGERY PHOTOS', label: 'Order: 5698', sub: 'Photos will save under order 5698' } });
@@ -822,12 +823,12 @@ test('QR Codes and Data Matrix codes scanned through the camera behave identical
     await scanRefused(bench.page, 'QRCode', '5626-2-P3-DELIV', 'Bench');
     assert.equal((await scanAndCapture(delivery.page, 'QRCode', '5626-2-P3-DELIV', 2)).heading, 'Saved on this iPad');
     assert.equal((await scanAndCapture(delivery.page, 'DataMatrix', '5698-P-DELIV', 1)).heading, 'Saved on this iPad');
-    assert.equal((await scanAndCapture(bench.page, 'DataMatrix', '5698-F-07', 1)).heading, 'Saved on this iPad');
-    assert.equal((await scanAndCapture(bench.page, 'QRCode', '5626-2-D-01', 2)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(bench.page, 'DataMatrix', '5698-F', 1)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(bench.page, 'QRCode', '5626-2-D', 2)).heading, 'Saved on this iPad');
     assert.equal((await scanAndCapture(irn.page, 'QRCode', '5626-2', 1)).heading, 'Saved on this iPad');
     assert.equal((await scanAndCapture(irn.page, 'DataMatrix', '5698', 1)).heading, 'Saved on this iPad');
     assert.deepEqual(await queuedCodes(delivery.page), ['delivery 5626-2-P3-DELIV -> 5626-2 (2)', 'delivery 5698-P-DELIV -> 5698 (1)']);
-    assert.deepEqual(await queuedCodes(bench.page), ['bench 5626-2-D-01 -> 5626-2 (2)', 'bench 5698-F-07 -> 5698 (1)']);
+    assert.deepEqual(await queuedCodes(bench.page), ['bench 5626-2-D -> 5626-2 (2)', 'bench 5698-F -> 5698 (1)']);
     assert.deepEqual(await queuedCodes(irn.page), ['ironmongery 5626-2 -> 5626-2 (1)', 'ironmongery 5698 -> 5698 (1)']);
     for (const p of Object.values(pages)) await assertQueuedPhotosDistinct(p);
 

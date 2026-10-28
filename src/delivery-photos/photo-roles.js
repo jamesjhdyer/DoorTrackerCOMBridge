@@ -17,12 +17,10 @@
 // exactly reference.js's order-number grammar):
 //   Delivery     reference.js unchanged: <ORDER>-DELIV, <ORDER>-P-DELIV,
 //                <ORDER>-P<n>-DELIV (n 2-99)
-//   Bench        <ORDER>-D-<unit> or <ORDER>-F-<unit> - a door or frame
-//                production label. <unit> is 2-4 digits, never all zeros
-//                (labels are printed zero-padded to at least two digits,
-//                e.g. "5698-D-01"). The unit is accepted but deliberately
-//                ignored: every Bench photo of an order files into the
-//                same order folder.
+//   Bench        <ORDER>-D or <ORDER>-F - a door or frame production
+//                label, e.g. "5698-D" or "5626-2-F". No door/frame number
+//                after the letter: every Bench photo of an order files into
+//                the same order folder anyway.
 //   Ironmongery  <ORDER> on its own, e.g. "5698" or "5626-2"
 // The three grammars are disjoint - no code is valid for two roles - so a
 // code scanned under one role can never be filed as another.
@@ -57,8 +55,8 @@
       instruction: 'Scan a door or frame label',
       scannedLabel: 'Scanned',
       inputLabel: 'Door or frame label',
-      placeholder: '5698-D-01',
-      example: '5698-D-01 or 5698-F-01'
+      placeholder: '5698-D',
+      example: '5698-D or 5698-F'
     }),
     ironmongery: Object.freeze({
       key: 'ironmongery',
@@ -81,7 +79,7 @@
   const MAX_ORDER_LENGTH = 20;
   const MAX_CODE_LENGTH = 40;
   const ORDER_PATTERN = /^[0-9]+(?:-[0-9]+)*$/;
-  const BENCH_PATTERN = /^([0-9]+(?:-[0-9]+)*)-([DF])-([0-9]{2,4})$/;
+  const BENCH_PATTERN = /^([0-9]+(?:-[0-9]+)*)-([DF])$/;
 
   function isRole(role) {
     return typeof role === 'string' && Object.prototype.hasOwnProperty.call(ROLES, role);
@@ -110,17 +108,16 @@
     return { ok: true, baseOrder: n.value };
   }
 
-  // "5698-D-07" / "5626-2-F-03" -> { ok, code, baseOrder, section: 'D'|'F', unit }.
+  // "5698-D" / "5626-2-F" -> { ok, code, baseOrder, section: 'D'|'F' }.
   function parseBenchLabel(input) {
     const n = normalise(input);
     if (!n.ok) return n;
     const match = BENCH_PATTERN.exec(n.value);
-    if (!match) return { ok: false, reason: 'Does not look like a door or frame label (expected something like 5698-D-01 or 5698-F-01).' };
-    const [, baseOrder, section, unitDigits] = match;
+    if (!match) return { ok: false, reason: 'Does not look like a door or frame label (expected something like 5698-D or 5698-F).' };
+    const [, baseOrder, section] = match;
     const problem = checkOrder(baseOrder);
     if (problem) return { ok: false, reason: problem };
-    if (/^0+$/.test(unitDigits)) return { ok: false, reason: 'A door or frame number is never zero.' };
-    return { ok: true, code: n.value, baseOrder, section, unit: Number(unitDigits) };
+    return { ok: true, code: n.value, baseOrder, section };
   }
 
   // The one entry point both sides use: what does `role` make of `input`?

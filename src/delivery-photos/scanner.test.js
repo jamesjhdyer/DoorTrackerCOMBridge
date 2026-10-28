@@ -84,7 +84,7 @@ test('the scanner looks for exactly two formats: Data Matrix and QR Code', async
 
 const ACCEPTED = {
   delivery: ['5698-DELIV', '5698-P-DELIV', '5698-P2-DELIV', '5626-2-P3-DELIV'],
-  bench: ['5698-D-01', '5698-F-07', '5626-2-D-01', '5626-2-F-03'],
+  bench: ['5698-D', '5698-F', '5626-2-D', '5626-2-F'],
   ironmongery: ['5698', '5626-2']
 };
 
@@ -108,10 +108,10 @@ test('a code meant for another role is refused whichever format it is in', async
   const cases = [
     ['bench', '5698-DELIV'],
     ['bench', '5698'],
-    ['delivery', '5698-D-01'],
+    ['delivery', '5698-D'],
     ['delivery', '5626-2'],
     ['ironmongery', '5698-DELIV'],
-    ['ironmongery', '5626-2-F-03']
+    ['ironmongery', '5626-2-F']
   ];
   for (const [role, text] of cases) {
     const typed = Roles.parseForRole(role, text);
@@ -125,7 +125,7 @@ test('a code meant for another role is refused whichever format it is in', async
 });
 
 test('a QR Code with text that is no valid code at all is refused for every role', async () => {
-  for (const text of ['HELLO', 'https://example.com/5698-DELIV', '5698-DELIV-EXTRA', '5698-D-00']) {
+  for (const text of ['HELLO', 'https://example.com/5698-DELIV', '5698-DELIV-EXTRA', '5698-D-00', '5698-D-01', '5626-2-F-03']) {
     const decoded = await scan('QRCode', text);
     assert.equal(decoded, text);
     for (const role of Roles.ROLE_KEYS) assert.equal(Roles.parseForRole(role, decoded).ok, false, `QR "${text}" refused on a ${role} iPad`);

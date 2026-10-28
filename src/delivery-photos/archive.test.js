@@ -481,7 +481,7 @@ test('the specification examples, exactly', async () => {
     await file(env, '5698', 'DELIV');
     assert.deepEqual(listing(env, '5698'), ['001-BENCH.jpg', '002-DELIV.jpg', '003-DELIV.jpg']);
 
-    // Bench 5626-2-D-07, into a folder that already has 001-DELIV.jpg.
+    // Bench 5626-2-D, into a folder that already has 001-DELIV.jpg.
     seed(env, '5626-2', ['001-DELIV.jpg']);
     await file(env, '5626-2', 'BENCH');
     await file(env, '5626-2', 'BENCH');

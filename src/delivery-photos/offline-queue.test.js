@@ -468,7 +468,7 @@ test('formatBytes reads naturally', () => {
 test('Bench and Ironmongery sessions keep their role, original scanned value and base order, and survive a reload', async () => {
   const indexedDB = new IDBFactory();
   const first = await Queue.openStore({ indexedDB });
-  await first.saveSession(roleSession('bench', '5698-D-07'), photos(4, 'bench'));
+  await first.saveSession(roleSession('bench', '5698-D'), photos(4, 'bench'));
   await first.saveSession(roleSession('ironmongery', '5626-2'), photos(3, 'irn'));
   await first.saveSession(roleSession('delivery', '5698-P2-DELIV'), photos(5, 'deliv'));
   first.close();
@@ -478,7 +478,7 @@ test('Bench and Ironmongery sessions keep their role, original scanned value and
   assert.deepEqual(
     sessions.map((s) => [s.role, s.code, s.baseOrder, s.photoCount, s.deliveryType, s.partNo]),
     [
-      ['bench', '5698-D-07', '5698', 4, '', ''],
+      ['bench', '5698-D', '5698', 4, '', ''],
       ['ironmongery', '5626-2', '5626-2', 3, '', ''],
       ['delivery', '5698-P2-DELIV', '5698', 5, 'Part Delivery', 2]
     ]
@@ -496,15 +496,15 @@ test('Bench and Ironmongery sessions keep their role, original scanned value and
 test('a Bench iPad sends its queued Bench sessions with their own role and scanned code', async () => {
   const { store, service, engine } = await setup();
   service.role = 'bench';
-  const a = roleSession('bench', '5698-D-07');
-  const b = roleSession('bench', '5626-2-F-03');
+  const a = roleSession('bench', '5698-D');
+  const b = roleSession('bench', '5626-2-F');
   await store.saveSession(a, photos(2, 'a'));
   await store.saveSession(b, photos(1, 'b'));
   assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 2, failed: 0 });
-  assert.deepEqual([...new Set(service.uploads.map((u) => `${u.role} ${u.code}`))], ['bench 5698-D-07', 'bench 5626-2-F-03']);
+  assert.deepEqual([...new Set(service.uploads.map((u) => `${u.role} ${u.code}`))], ['bench 5698-D', 'bench 5626-2-F']);
   assert.deepEqual(service.completes, [
-    { sessionId: a.sessionId, role: 'bench', code: '5698-D-07', photosSaved: 2 },
-    { sessionId: b.sessionId, role: 'bench', code: '5626-2-F-03', photosSaved: 1 }
+    { sessionId: a.sessionId, role: 'bench', code: '5698-D', photosSaved: 2 },
+    { sessionId: b.sessionId, role: 'bench', code: '5626-2-F', photosSaved: 1 }
   ]);
   assert.deepEqual(await store.listSessions(), []);
 });
@@ -512,7 +512,7 @@ test('a Bench iPad sends its queued Bench sessions with their own role and scann
 test('re-paired as another role: sessions taken as the old role are kept, never sent; matching ones still go', async () => {
   const { store, service, engine } = await setup();
   service.role = 'delivery'; // this iPad was a Bench iPad when these were taken
-  const bench = roleSession('bench', '5698-D-07');
+  const bench = roleSession('bench', '5698-D');
   const delivery = roleSession('delivery', '5701-DELIV');
   await store.saveSession(bench, photos(2, 'bench'));
   await store.saveSession(delivery, photos(1, 'deliv'));

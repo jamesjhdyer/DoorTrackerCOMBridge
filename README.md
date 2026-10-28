@@ -52,7 +52,7 @@ iPad cannot choose or change it):
 | Role | Scans | Example | Files as |
 |---|---|---|---|
 | Delivery | the delivery note | `5698-P2-DELIV` | `001-DELIV.jpg` |
-| Bench | a door or frame production label | `5698-D-07`, `5626-2-F-03` | `002-BENCH.jpg` |
+| Bench | a door or frame production label | `5698-D`, `5626-2-F` | `002-BENCH.jpg` |
 | Ironmongery | an order number (scanned or typed) | `5698`, `5626-2` | `003-IRN.jpg` |
 
 Every photograph, whatever its role, goes into ONE folder per order, named

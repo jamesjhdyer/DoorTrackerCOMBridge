@@ -452,7 +452,7 @@ function router(req, res, deps) {
   const match = /^\/api\/photos\/([^/]+)\/([^/]+)$/.exec(url.pathname);
 
   // PUT /api/photos/<scanned code>/<photo uuid> - the path names only the
-  // code the iPad scanned (e.g. 5698-P2-DELIV, 5698-D-07, 5626-2) and the
+  // code the iPad scanned (e.g. 5698-P2-DELIV, 5698-D, 5626-2) and the
   // photo's id. Never a folder or file name: those are decided server-side.
   if (req.method === 'PUT' && match) {
     handleUpload(req, res, { code: match[1], photoId: match[2] }, deps).catch((err) => {

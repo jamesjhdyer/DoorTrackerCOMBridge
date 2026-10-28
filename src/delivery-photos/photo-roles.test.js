@@ -37,44 +37,39 @@ test('Delivery: the full/part details still come from the delivery scan itself',
   assert.deepEqual([full.delivery.type, full.delivery.partNumber], ['standard', null]);
 });
 
-test('Bench: door and frame labels resolve to the base order, whatever the unit number', () => {
-  assert.equal(base('bench', '5698-D-01'), '5698');
-  assert.equal(base('bench', '5698-D-02'), '5698');
-  assert.equal(base('bench', '5698-D-17'), '5698');
-  assert.equal(base('bench', '5698-F-01'), '5698');
-  assert.equal(base('bench', '5698-F-05'), '5698');
-  assert.equal(base('bench', '5698-F-07'), '5698');
-  assert.equal(base('bench', '5626-2-D-01'), '5626-2');
-  assert.equal(base('bench', '5626-2-F-03'), '5626-2');
-  assert.equal(base('bench', '5698-D-100'), '5698', 'a job with 100+ doors');
-  assert.equal(base('bench', ' 5698-d-07 '), '5698', 'trimmed and case-normalised');
+test('Bench: door and frame labels resolve to the base order', () => {
+  assert.equal(base('bench', '5698-D'), '5698');
+  assert.equal(base('bench', '5698-F'), '5698');
+  assert.equal(base('bench', '5626-2-D'), '5626-2');
+  assert.equal(base('bench', '5626-2-F'), '5626-2');
+  assert.equal(base('bench', ' 5698-d '), '5698', 'trimmed and case-normalised');
 
-  const parsed = PhotoRoles.parseForRole('bench', '5626-2-D-07');
-  assert.equal(parsed.code, '5626-2-D-07', 'the original scanned value is kept');
+  const parsed = PhotoRoles.parseForRole('bench', '5626-2-D');
+  assert.equal(parsed.code, '5626-2-D', 'the original scanned value is kept');
   assert.equal(parsed.delivery, null);
-  assert.deepEqual(PhotoRoles.parseBenchLabel('5626-2-F-03'), { ok: true, code: '5626-2-F-03', baseOrder: '5626-2', section: 'F', unit: 3 });
+  assert.deepEqual(PhotoRoles.parseBenchLabel('5626-2-F'), { ok: true, code: '5626-2-F', baseOrder: '5626-2', section: 'F' });
 });
 
 test('Bench: malformed or non-label codes are rejected', () => {
   for (const bad of [
     '5698',
-    '5698-D',
-    '5698-F',
+    '5698-D-01',
+    '5698-F-07',
+    '5626-2-D-01',
     '5698-D-1',
-    '5698-D-00',
-    '5698-D-12345',
-    '5698-J-01',
-    '5698-DF-01',
-    '5698--D-01',
-    '-D-01',
-    'D-01',
-    '5698-D-01-02',
+    '5698-D-',
+    '5698-J',
+    '5698-DF',
+    '5698--D',
+    '-D',
+    'D',
+    '5698-D-F',
     '5698-DELIV',
     '5698-P2-DELIV',
-    '5698-D-01/../x',
-    '..\\5698-D-01',
-    '5698 D 01',
-    'ABC-D-01',
+    '5698-D/../x',
+    '..\\5698-D',
+    '5698 D',
+    'ABC-D',
     '',
     '   ',
     null
@@ -94,7 +89,8 @@ test('Ironmongery: malformed and path-like order numbers are rejected', () => {
   for (const bad of [
     '5698-IRN',
     '5698-DELIV',
-    '5698-D-01',
+    '5698-D',
+    '5698-F',
     '../5698',
     '5698/..',
     '..\\..\\Windows',
@@ -123,7 +119,7 @@ test('Ironmongery: malformed and path-like order numbers are rejected', () => {
 });
 
 test('the three grammars are disjoint: no code is valid for more than one role', () => {
-  const samples = ['5698-DELIV', '5698-P-DELIV', '5698-P2-DELIV', '5626-2-P3-DELIV', '5698-D-01', '5698-F-07', '5626-2-D-01', '5698', '5626-2', '5698-IRN', '5698-BENCH'];
+  const samples = ['5698-DELIV', '5698-P-DELIV', '5698-P2-DELIV', '5626-2-P3-DELIV', '5698-D', '5698-F', '5626-2-D', '5698-D-01', '5698', '5626-2', '5698-IRN', '5698-BENCH'];
   for (const code of samples) {
     const valid = PhotoRoles.ROLE_KEYS.filter((role) => PhotoRoles.parseForRole(role, code).ok);
     assert.ok(valid.length <= 1, `${code} is valid for ${valid.join(' and ')}`);

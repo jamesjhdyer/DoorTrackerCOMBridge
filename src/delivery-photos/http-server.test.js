@@ -1001,12 +1001,12 @@ const orderFiles = (env, folder) => {
   }
 };
 
-test('a Bench iPad files door and frame labels under the base order, as -BENCH, whatever the unit', async () => {
+test('a Bench iPad files door and frame labels under the base order, as -BENCH', async () => {
   const env = makeEnv();
   try {
     await withServer(env, { role: 'bench' }, async ({ config, agent, token }) => {
       const results = [];
-      for (const code of ['5698-D-01', '5698-F-07', '5698-D-17', '5626-2-D-01', '5626-2-F-03']) {
+      for (const code of ['5698-D', '5698-F', '5698-D', '5626-2-D', '5626-2-F']) {
         const res = await upload(agent, config.port, token, code, jpeg(`bench-${code}`, 2500));
         assert.equal(res.status, 201, JSON.stringify(res.body));
         assert.equal(res.body.role, 'bench');
@@ -1038,9 +1038,9 @@ test('every role refuses the other roles\' codes (and malformed ones), and nothi
     await withServer(env, {}, async ({ config, agent, token: deliveryToken, pairing }) => {
       const tokens = { delivery: deliveryToken, bench: pairAs(pairing, 'bench'), ironmongery: pairAs(pairing, 'ironmongery') };
       const refused = {
-        delivery: ['5698-D-01', '5698', '5626-2', '5698-IRN', '5698-BENCH'],
-        bench: ['5698-DELIV', '5698-P2-DELIV', '5698', '5698-D', '5698-D-1', '5698-X-01', '5698-D-00', '..%2F5698-D-01'],
-        ironmongery: ['5698-DELIV', '5698-D-01', '5698-IRN', '..', '..%2F..%2Fetc', '5698%5Cevil', 'CON', '5626--2', '5698-']
+        delivery: ['5698-D', '5698', '5626-2', '5698-IRN', '5698-BENCH'],
+        bench: ['5698-DELIV', '5698-P2-DELIV', '5698', '5698-D-01', '5698-F-07', '5698-X', '5698-DF', '..%2F5698-D'],
+        ironmongery: ['5698-DELIV', '5698-D', '5698-IRN', '..', '..%2F..%2Fetc', '5698%5Cevil', 'CON', '5626--2', '5698-']
       };
       for (const [role, codes] of Object.entries(refused)) {
         for (const code of codes) {
@@ -1069,7 +1069,7 @@ test('the role cannot be spoofed: a Bench token is Bench whatever the request sa
       assert.deepEqual(fs.readdirSync(env.share), [], 'no -DELIV file, no folder');
 
       // Its own role claimed honestly is fine, and still files as BENCH.
-      const honest = await upload(agent, config.port, token, '5698-D-03', jpeg('honest', 2000), { headers: { 'X-Photo-Role': 'bench' } });
+      const honest = await upload(agent, config.port, token, '5698-D', jpeg('honest', 2000), { headers: { 'X-Photo-Role': 'bench' } });
       assert.equal(honest.status, 201);
       assert.equal(honest.body.storagePath, '5698/001-BENCH.jpg');
     });
@@ -1082,7 +1082,7 @@ test('an Ironmongery token can never produce a -DELIV or -BENCH file', async () 
   const env = makeEnv();
   try {
     await withServer(env, { role: 'ironmongery' }, async ({ config, agent, token }) => {
-      for (const [code, headers] of [['5698-DELIV', {}], ['5698-D-01', {}], ['5698', { 'X-Photo-Role': 'delivery' }], ['5698', { 'X-Photo-Role': 'bench' }]]) {
+      for (const [code, headers] of [['5698-DELIV', {}], ['5698-D', {}], ['5698', { 'X-Photo-Role': 'delivery' }], ['5698', { 'X-Photo-Role': 'bench' }]]) {
         const res = await upload(agent, config.port, token, code, jpeg(`irn-spoof-${code}`, 2000), { headers });
         assert.notEqual(res.status, 201, `${code} ${JSON.stringify(headers)}`);
       }
@@ -1121,7 +1121,7 @@ test('revoking one device stops only that iPad uploading', async () => {
       const benchToken = pairAs(pairing, 'bench');
       const benchId = pairing.verify(benchToken).deviceId;
       assert.equal(pairing.revokeDevice(benchId), true);
-      assert.equal((await upload(agent, config.port, benchToken, '5698-D-01', jpeg('revoked', 2000))).status, 401);
+      assert.equal((await upload(agent, config.port, benchToken, '5698-D', jpeg('revoked', 2000))).status, 401);
       assert.equal((await upload(agent, config.port, token, '5698-DELIV', jpeg('still-ok', 2000))).status, 201);
     });
   } finally {
@@ -1138,8 +1138,8 @@ test('session complete: Delivery still creates its Sheet event with Full/Part fr
       const irn = pairAs(pairing, 'ironmongery');
 
       // Bench photos first, so the delivery photos are numbered after them.
-      assert.equal((await upload(agent, config.port, bench, '5698-D-07', jpeg('b1', 2500))).body.storagePath, '5698/001-BENCH.jpg');
-      const benchDone = await completeAs(agent, config.port, bench, { sessionId: randomUUID(), code: '5698-D-07', photosSaved: 1 });
+      assert.equal((await upload(agent, config.port, bench, '5698-D', jpeg('b1', 2500))).body.storagePath, '5698/001-BENCH.jpg');
+      const benchDone = await completeAs(agent, config.port, bench, { sessionId: randomUUID(), code: '5698-D', photosSaved: 1 });
       assert.deepEqual([benchDone.status, benchDone.body.role, benchDone.body.tracked], [201, 'bench', false]);
       const irnDone = await completeAs(agent, config.port, irn, { sessionId: randomUUID(), code: '5626-2', photosSaved: 3 });
       assert.deepEqual([irnDone.status, irnDone.body.tracked], [201, false]);
@@ -1178,7 +1178,7 @@ test('session complete is role-checked too: other roles\' codes, the legacy Deli
       assert.equal((await completeAs(agent, config.port, bench, { sessionId: randomUUID(), code: '5698-DELIV', photosSaved: 1 })).status, 400);
       const legacy = await completeAs(agent, config.port, bench, { reference: '5698-DELIV', photosSaved: 1 }, { path: '/api/delivery-sessions/complete' });
       assert.deepEqual([legacy.status, legacy.body.error], [403, 'role_mismatch']);
-      const claimed = await completeAs(agent, config.port, bench, { sessionId: randomUUID(), code: '5698-D-01', photosSaved: 1 }, { headers: { 'X-Photo-Role': 'delivery' } });
+      const claimed = await completeAs(agent, config.port, bench, { sessionId: randomUUID(), code: '5698-D', photosSaved: 1 }, { headers: { 'X-Photo-Role': 'delivery' } });
       assert.deepEqual([claimed.status, claimed.body.error], [403, 'role_mismatch']);
       assert.deepEqual(listPendingEvents(queueDir), []);
 
@@ -1188,10 +1188,10 @@ test('session complete is role-checked too: other roles\' codes, the legacy Deli
       assert.equal(listPendingEvents(queueDir).length, 1);
 
       // Malformed sessions are refused for every role.
-      for (const body of [{ code: '5698-D-01', photosSaved: 0 }, { code: '5698-D-01', photosSaved: 'two' }, { code: '5698-D-01', photosSaved: 1, sessionId: '../x' }, { photosSaved: 1 }]) {
+      for (const body of [{ code: '5698-D', photosSaved: 0 }, { code: '5698-D', photosSaved: 'two' }, { code: '5698-D', photosSaved: 1, sessionId: '../x' }, { photosSaved: 1 }]) {
         assert.equal((await completeAs(agent, config.port, bench, body)).status, 400, JSON.stringify(body));
       }
-      assert.equal((await completeAs(agent, config.port, 'f'.repeat(64), { code: '5698-D-01', photosSaved: 1 })).status, 401);
+      assert.equal((await completeAs(agent, config.port, 'f'.repeat(64), { code: '5698-D', photosSaved: 1 })).status, 401);
     });
   } finally {
     env.cleanup();
@@ -1206,7 +1206,7 @@ test('concurrent saves from several iPads into one order folder: every photo get
       fs.mkdirSync(nodePath.join(env.share, '5698'));
       fs.writeFileSync(nodePath.join(env.share, '5698', '001-DELIV.jpg'), 'already here');
       const tokens = { delivery: token, bench: pairAs(pairing, 'bench'), ironmongery: pairAs(pairing, 'ironmongery') };
-      const codes = { delivery: '5698-P2-DELIV', bench: '5698-D-04', ironmongery: '5698' };
+      const codes = { delivery: '5698-P2-DELIV', bench: '5698-D', ironmongery: '5698' };
       const sent = [];
       for (let i = 0; i < 9; i++) {
         const role = ['delivery', 'bench', 'ironmongery'][i % 3];
@@ -1238,11 +1238,11 @@ test('the same photo retried several times at once is filed once and uses one nu
     await withServer(env, { role: 'bench', limiter }, async ({ config, agent, token }) => {
       const bytes = jpeg('retry-storm', 2400);
       const photoId = randomUUID();
-      const results = await Promise.all(Array.from({ length: 4 }, () => upload(agent, config.port, token, '5626-2-F-03', bytes, { photoId })));
+      const results = await Promise.all(Array.from({ length: 4 }, () => upload(agent, config.port, token, '5626-2-F', bytes, { photoId })));
       for (const r of results) assert.equal(r.status, 201, JSON.stringify(r.body));
       assert.deepEqual([...new Set(results.map((r) => r.body.storagePath))], ['5626-2/001-BENCH.jpg']);
       assert.deepEqual(orderFiles(env, '5626-2'), ['001-BENCH.jpg']);
-      assert.equal((await upload(agent, config.port, token, '5626-2-D-01', jpeg('next', 2400))).body.storagePath, '5626-2/002-BENCH.jpg');
+      assert.equal((await upload(agent, config.port, token, '5626-2-D', jpeg('next', 2400))).body.storagePath, '5626-2/002-BENCH.jpg');
     });
   } finally {
     env.cleanup();

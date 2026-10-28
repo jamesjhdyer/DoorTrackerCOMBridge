@@ -341,14 +341,14 @@ test('all three roles offline: queued apart from the PC, then filed into the rig
     fs.writeFileSync(nodePath.join(env.share, '5698', '001-BENCH.jpg'), 'earlier bench photo');
 
     const delivery = await queueRoleSession(deliveryStore, 'delivery', '5698-P2-DELIV', shots(2, 'deliv'));
-    const benchSession = await queueRoleSession(bench.store, 'bench', '5626-2-D-07', shots(2, 'bench'));
+    const benchSession = await queueRoleSession(bench.store, 'bench', '5626-2-D', shots(2, 'bench'));
     await queueRoleSession(irn.store, 'ironmongery', '5626-2', shots(1, 'irn'));
 
     for (const e of [deliveryEngine, bench.engine, irn.engine]) assert.equal((await e.syncAll()).outcome, 'unreachable');
     assert.deepEqual(filesIn(env, '5626-2'), []);
     // Still there after "closing and reopening" (re-listing the same databases).
     const [queuedBench] = await bench.store.listSessions();
-    assert.deepEqual([queuedBench.role, queuedBench.code, queuedBench.baseOrder, queuedBench.photoCount], ['bench', '5626-2-D-07', '5626-2', 2]);
+    assert.deepEqual([queuedBench.role, queuedBench.code, queuedBench.baseOrder, queuedBench.photoCount], ['bench', '5626-2-D', '5626-2', 2]);
 
     await service.start();
     assert.deepEqual(await deliveryEngine.syncAll(), { outcome: 'done', sent: 1, failed: 0 });
@@ -381,7 +381,7 @@ test('a queued record edited to claim another role gains nothing: the PC files b
   const { service, token, store, engine } = await setup(env, undefined, 'bench');
   try {
     await service.start();
-    const session = await queueRoleSession(store, 'bench', '5698-D-07', shots(1, 'tamper'));
+    const session = await queueRoleSession(store, 'bench', '5698-D', shots(1, 'tamper'));
 
     // Someone edits the queued record on the iPad to pose as a Delivery.
     await store.updateSession(session.sessionId, { role: 'delivery', code: '5698-DELIV', reference: '5698-DELIV' });
@@ -402,7 +402,7 @@ test('a queued record edited to claim another role gains nothing: the PC files b
     assert.deepEqual(listPendingEvents(service.queueDir), [], 'no Delivery Sheet row from a Bench iPad');
 
     // Restored to what it really was, it files as -BENCH, under the token's role.
-    await store.updateSession(session.sessionId, { role: 'bench', code: '5698-D-07', reference: '' });
+    await store.updateSession(session.sessionId, { role: 'bench', code: '5698-D', reference: '' });
     assert.deepEqual(await engine.syncAll(), { outcome: 'done', sent: 1, failed: 0 });
     assert.deepEqual(filesIn(env, '5698'), ['001-BENCH.jpg']);
   } finally {
