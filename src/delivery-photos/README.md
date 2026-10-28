@@ -1,7 +1,7 @@
 # Delivery Photos
 
 An entirely local service: an iPad on the workshop Wi-Fi scans a delivery
-note's Data Matrix code, takes photographs, and this PC files them straight
+note's Data Matrix or QR code, takes photographs, and this PC files them straight
 onto the company network drive. No cloud storage, no website involved in the
 photo transfer at all.
 
@@ -44,13 +44,17 @@ program carries a small responder (`mdns.js`, via `bonjour-service`) so nothing
 else has to be installed on the PC. iPadOS resolves `.local` names natively,
 so the iPad needs nothing extra either.
 
-## Data Matrix scanning
+## Data Matrix and QR Code scanning
 
 Safari on iOS has no `BarcodeDetector` API at all. Scanning
 (`vendor/zxing/`, wired up in `delivery-photos-web/scanner.js`) uses
 `zxing-wasm` (a WebAssembly build of the real zxing-cpp engine), vendored
 locally rather than loaded from a CDN - this must keep working with no
-internet at all. It decodes one still frame at a time (grabbed from the
+internet at all. The decoder is limited to exactly two formats - Data
+Matrix and QR Code - and either one is accepted without the person choosing:
+the decoded text goes through the same role check (`photo-roles.js`)
+whichever format it came from, so the format never affects the role, order,
+folder, file name or tracking. It decodes one still frame at a time (grabbed from the
 live video via canvas, a few times a second) rather than the video stream
 continuously, and stops entirely once a valid code has been found.
 

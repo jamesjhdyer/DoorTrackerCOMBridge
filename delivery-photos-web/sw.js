@@ -1,7 +1,7 @@
 // The Delivery Photos Service Worker: keeps a local copy of the tool itself
-// (its "app shell" - page, scripts, styles, the Data Matrix decoder and its
-// WebAssembly, icons) on the iPad, so the tool still opens, scans and takes
-// photographs with no connection to the Windows PC at all.
+// (its "app shell" - page, scripts, styles, the Data Matrix / QR Code
+// decoder and its WebAssembly, icons) on the iPad, so the tool still opens,
+// scans and takes photographs with no connection to the Windows PC at all.
 //
 // It NEVER handles photographs or the Photo Service API: every /api/ request
 // goes straight to the network exactly as before, so uploads, pairing and

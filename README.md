@@ -9,7 +9,7 @@ The one Windows desktop app for the workshop PC:
 - **Label printing** — delivery labels rendered by the website, sent here and
   printed on a Zebra GK420D via raw ZPL (bypassing the Windows print driver).
 - **Delivery Photos** — an entirely local service: an iPad on the same
-  workshop Wi-Fi scans a delivery note's Data Matrix code, takes photographs,
+  workshop Wi-Fi scans a delivery note's Data Matrix or QR code, takes photographs,
   and this PC files them straight onto the company network drive. No cloud,
   no website involved in the photo transfer at all — it works even with the
   website completely unreachable. See

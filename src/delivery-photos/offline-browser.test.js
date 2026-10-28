@@ -611,3 +611,247 @@ test('Bench and Ironmongery iPads in a real browser: role shown, codes checked, 
     env.cleanup();
   }
 });
+
+// ---- Scanning through the camera: Data Matrix and QR Code -------------------
+
+async function codePng(format, text) {
+  const { writeBarcode } = await import('zxing-wasm/writer');
+  const result = await writeBarcode(text, { format, scale: 8 });
+  assert.equal(result.error, '');
+  return Buffer.from(await result.image.arrayBuffer()).toString('base64');
+}
+
+// Replaces the iPad's camera with a canvas the test can hold a code up to:
+// getUserMedia() returns the canvas's own video stream, so the real scanning
+// loop (scanner.js), the real decoder and the real role check all run on
+// what it shows. A frame counter is drawn in a corner so every photograph
+// taken from it is a different image.
+function fakeCameraScript() {
+  let canvas = null;
+  let code = null;
+  let frame = 0;
+  function draw() {
+    const ctx = canvas.getContext('2d');
+    ctx.fillStyle = '#9aa';
+    ctx.fillRect(0, 0, canvas.width, canvas.height);
+    if (code) {
+      const x = (canvas.width - code.naturalWidth) / 2;
+      const y = (canvas.height - code.naturalHeight) / 2;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(x - 40, y - 40, code.naturalWidth + 80, code.naturalHeight + 80);
+      ctx.drawImage(code, x, y);
+    }
+    ctx.fillStyle = '#000';
+    ctx.font = '24px sans-serif';
+    ctx.fillText(`frame ${++frame}`, 20, 40);
+  }
+  window.__fakeCamera = {
+    async show(b64) {
+      const img = new Image();
+      img.src = `data:image/png;base64,${b64}`;
+      await img.decode();
+      code = img;
+    },
+    clear() {
+      code = null;
+    }
+  };
+  navigator.mediaDevices.getUserMedia = async () => {
+    if (!canvas) {
+      canvas = document.createElement('canvas');
+      canvas.width = 1280;
+      canvas.height = 720;
+      draw();
+      setInterval(draw, 50);
+    }
+    return canvas.captureStream(30);
+  };
+}
+
+test('QR Codes and Data Matrix codes scanned through the camera behave identically, online and offline - in a real browser', { timeout: 240000 }, async (t) => {
+  const env = makeEnv();
+  const credentials = ensureCertificates(nodePath.join(env.home, 'certs'), 'localhost');
+  const spki = createHash('sha256').update(new X509Certificate(credentials.cert).publicKey.export({ type: 'spki', format: 'der' })).digest('base64');
+  const browser = await launchChrome(spki);
+  if (!browser) {
+    env.cleanup();
+    t.skip('Google Chrome is not installed on this machine - the browser-level offline test needs it.');
+    return;
+  }
+
+  const port = PORT + 4;
+  const config = { hostname: 'localhost', port, photoRoot: env.share, maxPhotoBytes: 18 * 1000 * 1000, operationTimeoutSeconds: 20, minFreeGb: 0 };
+  const pairing = new PairingManager({ devicesPath: nodePath.join(env.home, 'paired-devices.json') });
+  const queueDir = nodePath.join(env.home, 'tracking-queue');
+  const filedLogDir = nodePath.join(env.home, 'filed-sessions');
+  const logger = recordingLogger();
+  const browserLog = [];
+  let handle = null;
+  const startService = async () => {
+    handle = startServers({ config, credentials, runWorker: runInWorker, logger, spoolDir: env.spool, pairing, limiter: new ConcurrencyLimiter(), queueDir, filedLogDir });
+    await handle.listen();
+  };
+  // The PC switched off, open keep-alive connections included (see above).
+  const stopService = async () => {
+    const closing = handle.close();
+    handle.httpsServer.closeAllConnections();
+    handle.httpServer.closeAllConnections();
+    await closing;
+    handle = null;
+  };
+  const origin = `https://localhost:${port}`;
+  const files = (folder) => {
+    try {
+      return fs.readdirSync(nodePath.join(env.share, folder)).sort();
+    } catch {
+      return [];
+    }
+  };
+  const requests = [];
+
+  async function pairedPage(role) {
+    const context = await browser.newContext();
+    await context.addInitScript(fakeCameraScript);
+    const page = await context.newPage();
+    watchPage(page, role, browserLog);
+    page.on('request', (r) => requests.push(r.url()));
+    await page.goto(`${origin}/`);
+    await page.waitForSelector('#pairing-screen:not([hidden])');
+    await page.fill('#pairing-code-input', pairing.generateCode({ role }).code);
+    await page.click('#pairing-form button[type=submit]');
+    await page.waitForSelector('#scan-screen:not([hidden])');
+    await page.waitForFunction(() => Boolean(navigator.serviceWorker.controller), null, { timeout: 30000 });
+    return { context, page };
+  }
+
+  // Holds a code up to the camera and waits for the scanner to refuse it,
+  // with the same message the role check gives for it. Never reaches the
+  // capture screen.
+  async function scanRefused(page, format, text, label) {
+    await page.evaluate(() => {
+      document.getElementById('scan-message').textContent = '';
+    });
+    await page.evaluate((b64) => window.__fakeCamera.show(b64), await codePng(format, text));
+    await page.waitForFunction((l) => document.getElementById('scan-message').textContent.startsWith(`That is not a ${l} code`), label, { timeout: 20000 });
+    await page.evaluate(() => window.__fakeCamera.clear());
+    assert.equal(await page.isVisible('#scan-screen'), true, `${format} "${text}" is not accepted on a ${label} iPad`);
+    assert.equal(await page.isVisible('#capture-screen'), false);
+  }
+
+  // Holds a code up to the camera; once the scanner has accepted it, takes
+  // `photos` photographs and finishes - back on the scan screen afterwards.
+  async function scanAndCapture(page, format, text, photos) {
+    assert.equal(await page.isVisible('#scan-screen'), true);
+    await page.evaluate((b64) => window.__fakeCamera.show(b64), await codePng(format, text));
+    await page.waitForSelector('#capture-screen:not([hidden])', { timeout: 20000 });
+    await page.evaluate(() => window.__fakeCamera.clear());
+    const header = { role: await page.textContent('#capture-role'), label: await page.textContent('#reference-label'), sub: await page.textContent('#reference-sub') };
+    await page.waitForFunction(() => document.getElementById('capture-video').videoWidth > 0);
+    for (let i = 0; i < photos; i++) await pressShutter(page, i);
+    await page.click('#done-button');
+    await page.waitForSelector('#result-screen:not([hidden])', { timeout: 30000 });
+    const heading = await page.textContent('#result-heading');
+    await page.click('#scan-next-button');
+    await page.waitForSelector('#scan-screen:not([hidden])');
+    return { heading, header };
+  }
+
+  const queuedCodes = (page) =>
+    page.evaluate(async () => {
+      const store = await DeliveryOfflineQueue.openStore({ indexedDB });
+      const out = (await store.listSessions()).map((s) => `${s.role} ${s.code} -> ${s.baseOrder} (${s.photoCount})`).sort();
+      store.close();
+      return out;
+    });
+  // A tracking event, minus what is different for every event anyway.
+  const eventContent = (e) => ({ orderNumber: e.orderNumber, reference: e.reference, deliveryType: e.deliveryType, partNo: e.partNo, photosSaved: e.photosSaved });
+
+  try {
+    await startService();
+    const delivery = await pairedPage('delivery');
+    const bench = await pairedPage('bench');
+    const irn = await pairedPage('ironmongery');
+    const pages = { delivery: delivery.page, bench: bench.page, ironmongery: irn.page };
+    const diagnose = diagnostics({ pages, pairing, origin, caCert: credentials.caCert, share: env.share, folders: ['5698', '5626-2'], logger, browserLog });
+
+    // ---- Delivery: nonsense and another role's code are refused; DM and QR file the same.
+    await scanRefused(delivery.page, 'QRCode', 'HELLO', 'Delivery');
+    await scanRefused(delivery.page, 'QRCode', '5698-D-01', 'Delivery');
+    const dmDeliv = await scanAndCapture(delivery.page, 'DataMatrix', '5698-DELIV', 1);
+    const qrDeliv = await scanAndCapture(delivery.page, 'QRCode', '5698-DELIV', 1);
+    assert.equal(dmDeliv.heading, 'Photographs filed successfully');
+    assert.deepEqual(qrDeliv, dmDeliv, 'a QR Code and a Data Matrix with the same text give the same capture screen and result');
+    const qrPart = await scanAndCapture(delivery.page, 'QRCode', '5698-P2-DELIV', 1);
+    assert.equal(qrPart.heading, 'Photographs filed successfully');
+    assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-DELIV.jpg', '003-DELIV.jpg']);
+    const onlineEvents = listPendingEvents(queueDir).map(eventContent);
+    assert.equal(onlineEvents.length, 3);
+    assert.deepEqual(onlineEvents.filter((e) => e.reference === '5698-DELIV'), [eventContent({ orderNumber: '5698', reference: '5698-DELIV', deliveryType: 'Full Delivery', partNo: '', photosSaved: 1 }), eventContent({ orderNumber: '5698', reference: '5698-DELIV', deliveryType: 'Full Delivery', partNo: '', photosSaved: 1 })], 'the same tracking record from a QR Code as from a Data Matrix');
+    assert.deepEqual(onlineEvents.find((e) => e.reference === '5698-P2-DELIV'), { orderNumber: '5698', reference: '5698-P2-DELIV', deliveryType: 'Part Delivery', partNo: 2, photosSaved: 1 });
+
+    // ---- Bench: a delivery code in a QR Code is refused; door/frame labels in either format file as -BENCH.
+    await scanRefused(bench.page, 'QRCode', '5698-DELIV', 'Bench');
+    await scanRefused(bench.page, 'DataMatrix', '5698', 'Bench');
+    const dmDoor = await scanAndCapture(bench.page, 'DataMatrix', '5698-D-01', 1);
+    const qrDoor = await scanAndCapture(bench.page, 'QRCode', '5698-D-01', 1);
+    assert.deepEqual(dmDoor, { heading: 'Photographs filed successfully', header: { role: 'BENCH PHOTOS', label: 'Scanned: 5698-D-01', sub: 'Order: 5698 · Photos will save under order 5698' } });
+    assert.deepEqual(qrDoor, dmDoor);
+    const qrFrame = await scanAndCapture(bench.page, 'QRCode', '5626-2-F-03', 1);
+    assert.deepEqual(qrFrame.header, { role: 'BENCH PHOTOS', label: 'Scanned: 5626-2-F-03', sub: 'Order: 5626-2 · Photos will save under order 5626-2' });
+
+    // ---- Ironmongery: an order number in either format files as -IRN.
+    await scanRefused(irn.page, 'QRCode', '5626-2-F-03', 'Ironmongery');
+    const dmOrder = await scanAndCapture(irn.page, 'DataMatrix', '5698', 1);
+    const qrOrder = await scanAndCapture(irn.page, 'QRCode', '5698', 1);
+    assert.deepEqual(dmOrder, { heading: 'Photographs filed successfully', header: { role: 'IRONMONGERY PHOTOS', label: 'Order: 5698', sub: 'Photos will save under order 5698' } });
+    assert.deepEqual(qrOrder, dmOrder);
+    const qrSubOrder = await scanAndCapture(irn.page, 'QRCode', '5626-2', 1);
+    assert.deepEqual(qrSubOrder.header, { role: 'IRONMONGERY PHOTOS', label: 'Order: 5626-2', sub: 'Photos will save under order 5626-2' });
+
+    assert.deepEqual(files('5698'), ['001-DELIV.jpg', '002-DELIV.jpg', '003-DELIV.jpg', '004-BENCH.jpg', '005-BENCH.jpg', '006-IRN.jpg', '007-IRN.jpg']);
+    assert.deepEqual(files('5626-2'), ['001-BENCH.jpg', '002-IRN.jpg']);
+    assert.equal(listPendingEvents(queueDir).length, 3, 'only Delivery photos make tracking events');
+
+    // ---- Offline: the PC is unreachable. Each iPad reopens from its cached
+    // shell and still decodes both formats from the cached decoder.
+    await stopService();
+    for (const p of Object.values(pages)) {
+      await p.reload();
+      await p.waitForSelector('#scan-screen:not([hidden])', { timeout: 30000 });
+    }
+    await scanRefused(bench.page, 'QRCode', '5626-2-P3-DELIV', 'Bench');
+    assert.equal((await scanAndCapture(delivery.page, 'QRCode', '5626-2-P3-DELIV', 2)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(delivery.page, 'DataMatrix', '5698-P-DELIV', 1)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(bench.page, 'DataMatrix', '5698-F-07', 1)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(bench.page, 'QRCode', '5626-2-D-01', 2)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(irn.page, 'QRCode', '5626-2', 1)).heading, 'Saved on this iPad');
+    assert.equal((await scanAndCapture(irn.page, 'DataMatrix', '5698', 1)).heading, 'Saved on this iPad');
+    assert.deepEqual(await queuedCodes(delivery.page), ['delivery 5626-2-P3-DELIV -> 5626-2 (2)', 'delivery 5698-P-DELIV -> 5698 (1)']);
+    assert.deepEqual(await queuedCodes(bench.page), ['bench 5626-2-D-01 -> 5626-2 (2)', 'bench 5698-F-07 -> 5698 (1)']);
+    assert.deepEqual(await queuedCodes(irn.page), ['ironmongery 5626-2 -> 5626-2 (1)', 'ironmongery 5698 -> 5698 (1)']);
+    for (const p of Object.values(pages)) await assertQueuedPhotosDistinct(p);
+
+    // ---- Back on the workshop Wi-Fi: everything sends, named by role as usual.
+    await startService();
+    for (const p of Object.values(pages)) await p.evaluate(() => window.dispatchEvent(new Event('focus')));
+    await waitFor(() => files('5698').length === 10 && files('5626-2').length === 7, { message: 'every queued photo to reach the drive', diagnose });
+    const suffixes = (folder) => files(folder).map((f) => f.replace(/^\d{3}-/, '')).sort();
+    assert.deepEqual(suffixes('5698'), ['BENCH.jpg', 'BENCH.jpg', 'BENCH.jpg', 'DELIV.jpg', 'DELIV.jpg', 'DELIV.jpg', 'DELIV.jpg', 'IRN.jpg', 'IRN.jpg', 'IRN.jpg']);
+    assert.deepEqual(suffixes('5626-2'), ['BENCH.jpg', 'BENCH.jpg', 'BENCH.jpg', 'DELIV.jpg', 'DELIV.jpg', 'IRN.jpg', 'IRN.jpg']);
+    assert.deepEqual(files('5698').map((f) => f.slice(0, 3)), ['001', '002', '003', '004', '005', '006', '007', '008', '009', '010'], 'numbering carries on with no gaps');
+    for (const p of Object.values(pages)) await p.waitForFunction(() => /Nothing waiting/.test(document.querySelector('#pending-summary').textContent), null, { timeout: 30000 });
+    const allEvents = listPendingEvents(queueDir).map(eventContent);
+    assert.equal(allEvents.length, 5);
+    assert.deepEqual(allEvents.find((e) => e.reference === '5626-2-P3-DELIV'), { orderNumber: '5626-2', reference: '5626-2-P3-DELIV', deliveryType: 'Part Delivery', partNo: 3, photosSaved: 2 });
+    assert.deepEqual(allEvents.find((e) => e.reference === '5698-P-DELIV'), { orderNumber: '5698', reference: '5698-P-DELIV', deliveryType: 'Part Delivery', partNo: 1, photosSaved: 1 });
+
+    // Nothing was fetched from anywhere but the PC itself (no CDN).
+    for (const url of requests) assert.ok(url.startsWith(`${origin}/`) || url.startsWith(`blob:${origin}/`) || url.startsWith('data:'), `unexpected request to ${url}`);
+
+    for (const { context } of [delivery, bench, irn]) await context.close();
+  } finally {
+    await browser.close();
+    if (handle) await stopService();
+    env.cleanup();
+  }
+});

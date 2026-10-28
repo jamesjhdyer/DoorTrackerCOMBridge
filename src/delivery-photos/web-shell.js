@@ -1,7 +1,7 @@
 'use strict';
 
 // The iPad tool's "app shell": every file it needs to start, scan a Data
-// Matrix code, take photographs and queue them - with NO connection to this
+// Matrix or QR code, take photographs and queue them - with NO connection to this
 // PC at all (the iPad away from the workshop Wi-Fi). The iPad's Service
 // Worker (delivery-photos-web/sw.js) keeps a copy of exactly these files.
 //

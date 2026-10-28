@@ -2,7 +2,7 @@
 // paired as ONE photo role - Delivery, Bench or Ironmongery (see
 // photo-roles.js) - chosen on the PC, and the whole tool follows it:
 // headings, what it scans, and how its photos are named on the drive.
-//   SCAN     - live camera, looking for a Data Matrix code (or a typed code)
+//   SCAN     - live camera, looking for a Data Matrix or QR code (or a typed code)
 //   CAPTURE  - the recognised code and order, live camera, thumbnails, Done
 //   RESULT   - filed (every photograph verified on the drive), saved on this
 //              iPad (the PC could not be reached - sent later), or partial

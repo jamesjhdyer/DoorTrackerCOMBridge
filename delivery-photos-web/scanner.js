@@ -1,4 +1,4 @@
-// Data Matrix scanning, entirely in the browser, entirely offline.
+// Data Matrix and QR Code scanning, entirely in the browser, entirely offline.
 //
 // Safari on iPad has no BarcodeDetector API at all (confirmed before writing
 // this), so decoding is done by zxing-wasm (a WebAssembly build of the real
@@ -31,11 +31,17 @@ const DeliveryPhotoScanner = (() => {
     modulePrepared = true;
   }
 
+  // Only these two symbologies are looked for. The format is never used for
+  // anything else: the decoded TEXT goes through exactly the same role check
+  // (photo-roles.js) whichever kind of code it came from, and the iPad's role
+  // still comes only from its pairing on the PC - never from the code.
+  const FORMATS = ['DataMatrix', 'QRCode'];
+
   // Grabs the CURRENT frame from `video` via a reusable offscreen canvas and
-  // tries to decode a Data Matrix code from it. Returns the decoded text, or
-  // null if none was found in this frame. A modest working size (this does
-  // not need to be full sensor resolution - it only has to be legible)
-  // keeps each decode fast enough to run several times a second.
+  // tries to decode a Data Matrix or QR code from it. Returns the decoded
+  // text, or null if none was found in this frame. A modest working size
+  // (this does not need to be full sensor resolution - it only has to be
+  // legible) keeps each decode fast enough to run several times a second.
   async function scanFrame(video, canvas) {
     if (!video.videoWidth || !video.videoHeight) return null;
     const maxEdge = 900;
@@ -49,11 +55,11 @@ const DeliveryPhotoScanner = (() => {
     const imageData = ctx.getImageData(0, 0, width, height);
 
     ensureModulePrepared();
-    const results = await ZXingWASM.readBarcodes(imageData, { formats: ['DataMatrix'], tryHarder: true, maxNumberOfSymbols: 1 });
+    const results = await ZXingWASM.readBarcodes(imageData, { formats: FORMATS, tryHarder: true, maxNumberOfSymbols: 1 });
     return results.length > 0 ? results[0].text : null;
   }
 
-  // Scans `video` on a plain interval until a Data Matrix code is found (or
+  // Scans `video` on a plain interval until a code is found (or
   // stop() is called first) - never faster than one decode at a time, so a
   // slow frame can never pile up behind another. onFound is called at most
   // once; scanning then stops automatically, matching "stop scanning once a
@@ -88,5 +94,5 @@ const DeliveryPhotoScanner = (() => {
     };
   }
 
-  return { scanFrame, startScanning };
+  return { scanFrame, startScanning, FORMATS };
 })();
