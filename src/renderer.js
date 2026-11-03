@@ -1,33 +1,6 @@
-const STATION_GROUPS = [
-  {
-    group: 'Doors',
-    stations: [
-      { key: 'door_cutting', label: 'Door Cut' },
-      { key: 'lipping_edging', label: 'Door Lipping' },
-      { key: 'door_press', label: 'Door Press' },
-      { key: 'door_machining', label: 'Door CNC' },
-      { key: 'spray_finishing', label: 'Door Spray' },
-      { key: 'door_bench', label: 'Door Bench' }
-    ]
-  },
-  {
-    group: 'Frames',
-    stations: [
-      { key: 'frame_cutting', label: 'Frame Cut & Mould' },
-      { key: 'frame_cut_to_size', label: 'Frame Cut To Size' },
-      { key: 'frame_machining', label: 'Frame CNC' },
-      { key: 'frame_sanding', label: 'Frame Sand' },
-      { key: 'frame_finish', label: 'Frame Spray' }
-    ]
-  },
-  {
-    group: 'Joint Station',
-    stations: [
-      { key: 'joint_assembly', label: 'Assembly' },
-      { key: 'joint_prehung', label: 'Pre-Hung' }
-    ]
-  }
-];
+// Stations and baud rates come from com-options.js (loaded just before this
+// file) - the same list Remote Admin validates against.
+const { STATION_GROUPS, BAUD_RATES, DEFAULT_BAUD_RATE } = window.ComOptions;
 
 const STATIONS = STATION_GROUPS.flatMap((g) => g.stations);
 const STATION_LABELS = new Map(STATIONS.map((s) => [s.key, s.label]));
@@ -87,6 +60,7 @@ const tabPanelsContainer = document.getElementById('tab-panels');
 const tabTemplate = document.getElementById('tab-panel-template');
 const dashboardPanel = document.getElementById('panel-dashboard');
 const deliveryPhotosPanel = document.getElementById('panel-delivery-photos');
+const remoteAdminPanel = document.getElementById('panel-remote-admin');
 const connectionsBody = document.getElementById('connections-body');
 const recentScansBody = document.getElementById('recent-scans-body');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
@@ -142,6 +116,16 @@ function populateManualScanStationList() {
     const option = document.createElement('option');
     option.value = station.label;
     manualScanStationList.appendChild(option);
+  }
+}
+
+function populateBaudSelect(selectEl) {
+  selectEl.innerHTML = '';
+  for (const rate of BAUD_RATES) {
+    const option = document.createElement('option');
+    option.value = String(rate);
+    option.textContent = String(rate);
+    selectEl.appendChild(option);
   }
 }
 
@@ -368,6 +352,9 @@ function setStatus(tab, status, message) {
 
   if (status === 'error' || status === 'disconnected') {
     setConnectedUiState(tab, false);
+  } else if (status === 'connected') {
+    // Also reached when Remote Admin connected this tab, not just this window.
+    setConnectedUiState(tab, true);
   }
 
   renderConnectionsTable();
@@ -460,6 +447,7 @@ function buildTabPanel(tab) {
   const manualScanResult = panel.querySelector('.manual-scan-result');
 
   populateStationSelect(stationSelect);
+  populateBaudSelect(baudSelect);
   stationSelect.value = tab.stationKey;
   baudSelect.value = String(tab.baudRate);
 
@@ -533,7 +521,7 @@ function createTabState(config) {
   const tab = {
     id: config.id || crypto.randomUUID(),
     comPort: config.comPort || '',
-    baudRate: config.baudRate || 19200,
+    baudRate: config.baudRate || DEFAULT_BAUD_RATE,
     stationKey: config.stationKey || STATIONS[0].key,
     connected: false,
     status: 'disconnected',
@@ -567,6 +555,13 @@ async function closeTab(id) {
     await disconnectTab(id);
   }
 
+  removeTabUi(id);
+  scheduleSaveSettings();
+}
+
+function removeTabUi(id) {
+  const tab = tabs.get(id);
+  if (!tab) return;
   tab.els.tabButton.remove();
   tab.els.panel.remove();
   tabs.delete(id);
@@ -577,7 +572,33 @@ async function closeTab(id) {
   }
 
   renderConnectionsTable();
-  scheduleSaveSettings();
+}
+
+// A connection was added, changed or removed from Remote Admin (already
+// saved, and any reconnect already done, by the main process) - bring the
+// tabs in line with the saved settings without saving anything back.
+function applySavedSettings(settings) {
+  const saved = new Map((settings.tabs || []).map((t) => [t.id, t]));
+  for (const id of Array.from(tabs.keys())) {
+    if (!saved.has(id)) removeTabUi(id);
+  }
+  for (const config of saved.values()) {
+    const tab = tabs.get(config.id);
+    if (!tab) {
+      createTabState(config);
+      continue;
+    }
+    tab.comPort = config.comPort || '';
+    tab.baudRate = config.baudRate || DEFAULT_BAUD_RATE;
+    tab.stationKey = config.stationKey || STATIONS[0].key;
+    ensureOptionExists(tab.els.portSelect, tab.comPort);
+    tab.els.portSelect.value = tab.comPort;
+    tab.els.baudSelect.value = String(tab.baudRate);
+    tab.els.stationSelect.value = tab.stationKey;
+    tab.els.tabLabel.textContent = tabLabel(tab);
+  }
+  renderConnectionsTable();
+  refreshAllPorts();
 }
 
 async function connectTab(id) {
@@ -792,6 +813,7 @@ reprintTestBtn.addEventListener('click', async () => {
 
 pinnedTabs.set('dashboard', { panel: dashboardPanel, button: buildPinnedTabButton('dashboard', 'Dashboard') });
 pinnedTabs.set('delivery-photos', { panel: deliveryPhotosPanel, button: buildPinnedTabButton('delivery-photos', 'Delivery Photos') });
+pinnedTabs.set('remote-admin', { panel: remoteAdminPanel, button: buildPinnedTabButton('remote-admin', 'Remote Admin') });
 setActiveTab('dashboard');
 
 // ---- Static event listeners ----
@@ -856,6 +878,8 @@ window.comBridge.onPrintJobEvent((event) => {
   upsertPrintJobRow(event);
 });
 
+window.comBridge.onSettingsChanged((settings) => applySavedSettings(settings));
+
 // ---- Init ----
 
 async function init() {
@@ -867,7 +891,7 @@ async function init() {
 
   const savedTabs = settings.tabs && settings.tabs.length > 0
     ? settings.tabs
-    : [{ comPort: '', baudRate: 19200, stationKey: STATIONS[0].key }];
+    : [{ comPort: '', baudRate: DEFAULT_BAUD_RATE, stationKey: STATIONS[0].key }];
 
   for (const tabConfig of savedTabs) {
     createTabState(tabConfig);
@@ -1145,3 +1169,91 @@ async function initDeliveryPhotos() {
 }
 
 initDeliveryPhotos();
+
+// ---- Remote Admin panel ----
+// Switches Remote Admin on/off, sets its port and admin password (see
+// main.js's "Remote Admin" section). The password is sent once, to be hashed
+// in the main process, and never read back or shown again.
+
+const ra = {
+  statusBadge: document.getElementById('ra-status-badge'),
+  statusMessage: document.getElementById('ra-status-message'),
+  urls: document.getElementById('ra-urls'),
+  passwordState: document.getElementById('ra-password-state'),
+  fingerprint: document.getElementById('ra-fingerprint'),
+  revokeBtn: document.getElementById('ra-revoke-btn'),
+  passwordInput: document.getElementById('ra-password-input'),
+  passwordConfirm: document.getElementById('ra-password-confirm'),
+  passwordBtn: document.getElementById('ra-password-btn'),
+  passwordFlash: document.getElementById('ra-password-flash'),
+  passwordError: document.getElementById('ra-password-error'),
+  enabledInput: document.getElementById('ra-enabled-input'),
+  portInput: document.getElementById('ra-port-input'),
+  saveBtn: document.getElementById('ra-save-btn'),
+  savedFlash: document.getElementById('ra-saved-flash'),
+  saveError: document.getElementById('ra-save-error')
+};
+
+function renderRemoteAdminStatus(status) {
+  const state = (status && status.state) || 'off';
+  const labels = { running: ['connected', 'Running'], off: ['disconnected', 'Off'], error: ['error', 'Error'], restarting: ['error', 'Restarting…'] };
+  const [cls, text] = labels[state] || labels.off;
+  setBadge(ra.statusBadge, cls, text);
+  ra.statusMessage.textContent = (status && status.lastError) || '';
+  if (status && status.caFingerprint) ra.fingerprint.textContent = status.caFingerprint;
+  if (status && Array.isArray(status.urls) && status.urls.length > 0) ra.urls.textContent = status.urls.join('\n');
+}
+
+async function refreshRemoteAdminSettings() {
+  const info = await window.remoteAdmin.getSettings();
+  ra.enabledInput.checked = info.config.enabled;
+  ra.portInput.value = info.config.port;
+  ra.passwordState.textContent = info.passwordSetAt ? `Set (${info.passwordSetAt === 'unknown' ? 'date unknown' : new Date(info.passwordSetAt).toLocaleString()})` : 'Not set';
+  ra.urls.textContent = info.urls.join('\n');
+  ra.fingerprint.textContent = info.caFingerprint || 'Created the first time Remote Admin starts';
+  renderRemoteAdminStatus(info.status);
+}
+
+ra.passwordBtn.addEventListener('click', async () => {
+  ra.passwordError.hidden = true;
+  ra.passwordBtn.disabled = true;
+  try {
+    const result = await window.remoteAdmin.setPassword(ra.passwordInput.value, ra.passwordConfirm.value);
+    if (result.ok) {
+      ra.passwordInput.value = '';
+      ra.passwordConfirm.value = '';
+      flashSaved(ra.passwordFlash);
+      await refreshRemoteAdminSettings();
+    } else {
+      ra.passwordError.hidden = false;
+      ra.passwordError.textContent = result.error;
+    }
+  } finally {
+    ra.passwordBtn.disabled = false;
+  }
+});
+
+ra.saveBtn.addEventListener('click', async () => {
+  ra.saveError.hidden = true;
+  ra.saveBtn.disabled = true;
+  try {
+    const result = await window.remoteAdmin.saveSettings({ enabled: ra.enabledInput.checked, port: ra.portInput.value ? Number(ra.portInput.value) : undefined });
+    if (result.ok) {
+      flashSaved(ra.savedFlash);
+      await refreshRemoteAdminSettings();
+    } else {
+      ra.saveError.hidden = false;
+      ra.saveError.textContent = result.errors.join(' ');
+    }
+  } finally {
+    ra.saveBtn.disabled = false;
+  }
+});
+
+ra.revokeBtn.addEventListener('click', async () => {
+  if (!confirm('Sign out every browser currently signed in to Remote Admin?')) return;
+  await window.remoteAdmin.revokeSessions();
+});
+
+window.remoteAdmin.onStatus((status) => renderRemoteAdminStatus(status));
+refreshRemoteAdminSettings();

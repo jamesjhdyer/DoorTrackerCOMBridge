@@ -15,7 +15,13 @@ const { runInWorker: runDeliveryPhotosWorkerOp } = require('./delivery-photos/wo
 const { listPendingEvents } = require('./delivery-photos/tracking');
 const { createTrackingSync } = require('./delivery-photos/tracking-sync');
 const { countOrdersFiledOn } = require('./delivery-photos/filed-today');
-const { createLogger: createDeliveryPhotosLogger } = require('./delivery-photos/logger');
+const { createLogger } = require('./delivery-photos/logger');
+const comSettings = require('./com-settings');
+const remoteAdminConfig = require('./remote-admin/admin-config');
+const { hashPassword, validatePassword } = require('./remote-admin/admin-auth');
+const { readCaFingerprint } = require('./remote-admin/admin-certs');
+const { adminUrls } = require('./remote-admin/net-guard');
+const { createAdminActions } = require('./remote-admin/actions');
 
 let mainWindow = null;
 
@@ -23,6 +29,17 @@ let mainWindow = null;
 // Each tab owns an independent SerialPort connection so multiple COM ports
 // can be listened to at once from a single running app.
 const connections = new Map();
+
+// tabId -> { status, message, lastScanAt, lastScanValue, lastError, lastErrorAt }
+// What Remote Admin shows for each connection - kept here, alongside
+// `connections`, because the renderer's own copy lives in another process.
+const scannerState = new Map();
+
+// The COM Bridge's own daily log (com-bridge-YYYY-MM-DD.log): connections
+// opened/closed/failed and scans the website refused - never every scan.
+// Remote Admin's Logs section reads it, and its own audit log sits beside it.
+const COM_LOGS_DIR = () => path.join(app.getPath('userData'), 'logs');
+const comLogger = createLogger({ dir: COM_LOGS_DIR(), prefix: 'com-bridge' });
 
 const API_TIMEOUT_MS = 8000;
 
@@ -40,13 +57,6 @@ const printProcessor = new PrintJobProcessor({
   onEvent: (event) => sendPrintJobEvent(event.jobId, event.status, event.message),
   priorAttemptStore: printAttemptStore
 });
-
-const DEFAULT_SETTINGS = {
-  apiUrl: '',
-  tabs: [
-    { id: randomUUID(), comPort: 'COM5', baudRate: 19200, stationKey: 'frame_cutting' }
-  ]
-};
 
 // ---- Delivery Photos ----
 //
@@ -93,7 +103,7 @@ const DELIVERY_PHOTOS_FILED_LOG_DIR = () => path.join(DELIVERY_PHOTOS_HOME(), 's
 // rather than a second log file nobody thinks to check. A plain append from
 // two separate processes to the same path is fine here: each call writes
 // one short line in a single fs.appendFileSync, never a read-modify-write.
-const trackingLogger = createDeliveryPhotosLogger({ dir: path.join(DELIVERY_PHOTOS_HOME(), 'logs') });
+const trackingLogger = createLogger({ dir: path.join(DELIVERY_PHOTOS_HOME(), 'logs') });
 
 const trackingSync = createTrackingSync({
   queueDir: DELIVERY_PHOTOS_TRACKING_QUEUE_DIR,
@@ -246,6 +256,7 @@ app.whenReady().then(() => {
 app.on('window-all-closed', () => {
   closeAllConnections();
   stopDeliveryPhotosWorker();
+  stopRemoteAdmin();
   if (process.platform !== 'darwin') {
     app.quit();
   }
@@ -261,53 +272,25 @@ function settingsFilePath() {
   return path.join(app.getPath('userData'), 'settings.json');
 }
 
-// Accepts either the current { apiUrl, tabs: [...] } shape or the older
-// single-connection { comPort, baudRate, stationKey, apiUrl } shape so
-// existing settings.json files on disk still load correctly.
-function normalizeSettings(parsed) {
-  if (!parsed || typeof parsed !== 'object') {
-    return structuredClone(DEFAULT_SETTINGS);
-  }
-
-  if (!Array.isArray(parsed.tabs)) {
-    return {
-      apiUrl: parsed.apiUrl || '',
-      tabs: [
-        {
-          id: randomUUID(),
-          comPort: parsed.comPort || DEFAULT_SETTINGS.tabs[0].comPort,
-          baudRate: parsed.baudRate || DEFAULT_SETTINGS.tabs[0].baudRate,
-          stationKey: parsed.stationKey || DEFAULT_SETTINGS.tabs[0].stationKey
-        }
-      ]
-    };
-  }
-
-  return {
-    apiUrl: parsed.apiUrl || '',
-    tabs: parsed.tabs.length > 0 ? parsed.tabs : structuredClone(DEFAULT_SETTINGS.tabs)
-  };
-}
-
+// Read and written only through com-settings.js - the same code Remote Admin's
+// connection edits go through (see remote-admin/actions.js).
 function loadSettingsFromDisk() {
-  try {
-    const raw = fs.readFileSync(settingsFilePath(), 'utf8');
-    return normalizeSettings(JSON.parse(raw));
-  } catch {
-    return normalizeSettings(null);
-  }
+  return comSettings.loadSettings(settingsFilePath());
 }
 
 function saveSettingsToDisk(settings) {
-  const normalized = normalizeSettings(settings);
-  fs.mkdirSync(path.dirname(settingsFilePath()), { recursive: true });
-  fs.writeFileSync(settingsFilePath(), JSON.stringify(normalized, null, 2), 'utf8');
-  return normalized;
+  return comSettings.saveSettings(settingsFilePath(), settings);
 }
 
 // ---- Serial port helpers ----
 
+function noteScannerState(tabId, patch) {
+  scannerState.set(tabId, { ...scannerState.get(tabId), ...patch });
+}
+
 function sendStatus(tabId, status, message) {
+  const at = new Date().toISOString();
+  noteScannerState(tabId, status === 'error' ? { status, message: message || '', lastError: message || '', lastErrorAt: at } : { status, message: message || '' });
   if (mainWindow) {
     mainWindow.webContents.send('port-status', { tabId, status, message: message || '' });
   }
@@ -316,12 +299,14 @@ function sendStatus(tabId, status, message) {
 function sendScan(tabId, portPath, value) {
   const id = randomUUID();
   const conn = connections.get(tabId);
+  const timestamp = new Date().toISOString();
+  noteScannerState(tabId, { lastScanAt: timestamp, lastScanValue: value.slice(0, 100) });
 
   if (mainWindow) {
     mainWindow.webContents.send('scan-received', {
       tabId,
       id,
-      timestamp: new Date().toISOString(),
+      timestamp,
       port: portPath,
       value,
       station: conn ? conn.stationKey : ''
@@ -344,6 +329,11 @@ function sendScan(tabId, portPath, value) {
 }
 
 function sendApiResult(tabId, id, status, message) {
+  if (status === 'error' && connections.has(tabId)) {
+    const portPath = connections.get(tabId).portPath;
+    noteScannerState(tabId, { lastError: `Scan not sent: ${message || 'unknown error'}`, lastErrorAt: new Date().toISOString() });
+    comLogger.warn(`A scan from ${portPath} was not sent to the website: ${message || 'unknown error'}`);
+  }
   if (mainWindow) {
     mainWindow.webContents.send('scan-api-result', { tabId, id, status, message: message || '' });
   }
@@ -518,7 +508,7 @@ function handleIncomingData(tabId, portPath, chunk) {
 
 // ---- IPC handlers ----
 
-ipcMain.handle('list-ports', async () => {
+async function listSerialPorts() {
   const ports = await SerialPort.list();
   return ports.map((p) => ({
     path: p.path,
@@ -526,7 +516,9 @@ ipcMain.handle('list-ports', async () => {
     serialNumber: p.serialNumber || '',
     pnpId: p.pnpId || ''
   }));
-});
+}
+
+ipcMain.handle('list-ports', async () => listSerialPorts());
 
 // Manual test scan — lets the operator simulate a scanner input for a tab
 // without a physical scanner. Deliberately routed through the exact same
@@ -644,28 +636,34 @@ ipcMain.handle('test-reprint-job', async (event, { jobId }) => {
   return { ok: true };
 });
 
-ipcMain.handle('connect-port', async (event, { tabId, path: portPath, baudRate, stationKey, apiUrl }) => {
+// Opens one tab's COM port - the one implementation behind both the Windows
+// app's Connect button (the connect-port handler below) and Remote Admin's
+// Connect/Reconnect (see remote-admin/actions.js). `source` only labels the
+// log line.
+function openConnection({ tabId, path: portPath, baudRate, stationKey, apiUrl, source }) {
   if (!tabId) {
-    return { ok: false, error: 'Missing tab id' };
+    return Promise.resolve({ ok: false, error: 'Missing tab id' });
   }
 
   const existing = connections.get(tabId);
   if (existing && existing.port && existing.port.isOpen) {
-    return { ok: false, error: 'This tab is already connected. Disconnect first.' };
+    return Promise.resolve({ ok: false, error: 'This tab is already connected. Disconnect first.' });
   }
 
   for (const [otherTabId, conn] of connections) {
     if (otherTabId !== tabId && conn.portPath === portPath && conn.port && conn.port.isOpen) {
-      return { ok: false, error: `${portPath} is already connected in another tab.` };
+      return Promise.resolve({ ok: false, error: `${portPath} is already connected in another tab.` });
     }
   }
 
+  const via = source ? ` (${source})` : '';
   return new Promise((resolve) => {
     const port = new SerialPort({ path: portPath, baudRate, autoOpen: false });
 
     port.open((err) => {
       if (err) {
         sendStatus(tabId, 'error', `Failed to open ${portPath}: ${err.message}`);
+        comLogger.warn(`Could not open ${portPath}${via}: ${err.message}`);
         resolve({ ok: false, error: err.message });
         return;
       }
@@ -680,6 +678,7 @@ ipcMain.handle('connect-port', async (event, { tabId, path: portPath, baudRate, 
       });
 
       sendStatus(tabId, 'connected', `Connected to ${portPath} at ${baudRate} baud`);
+      comLogger.info(`${portPath} connected at ${baudRate} baud, station ${stationKey || '(none)'}${via}.`);
       resolve({ ok: true });
 
       // Fire-and-forget — recovery must not delay the connect() response.
@@ -693,6 +692,7 @@ ipcMain.handle('connect-port', async (event, { tabId, path: portPath, baudRate, 
 
     port.on('error', (err) => {
       sendStatus(tabId, 'error', `Port error: ${err.message}`);
+      comLogger.error(`${portPath} port error: ${err.message}`);
     });
 
     port.on('close', () => {
@@ -700,31 +700,40 @@ ipcMain.handle('connect-port', async (event, { tabId, path: portPath, baudRate, 
       if (conn && conn.port === port) {
         connections.delete(tabId);
         sendStatus(tabId, 'disconnected', `Port ${portPath} closed`);
+        comLogger.warn(`${portPath} closed unexpectedly.`);
       }
     });
   });
-});
+}
 
-ipcMain.handle('disconnect-port', async (event, { tabId } = {}) => {
+// The one implementation behind the Windows app's Disconnect button and
+// Remote Admin's Disconnect/Reconnect.
+function closeConnectionAsync(tabId, source) {
   const conn = connections.get(tabId);
   if (!conn || !conn.port || !conn.port.isOpen) {
     connections.delete(tabId);
     sendStatus(tabId, 'disconnected', 'No active connection');
-    return { ok: true };
+    return Promise.resolve({ ok: true });
   }
 
   return new Promise((resolve) => {
     conn.port.close((err) => {
       if (err) {
+        comLogger.warn(`Could not close ${conn.portPath}: ${err.message}`);
         resolve({ ok: false, error: err.message });
         return;
       }
       connections.delete(tabId);
       sendStatus(tabId, 'disconnected', 'Disconnected');
+      comLogger.info(`${conn.portPath} disconnected${source ? ` (${source})` : ''}.`);
       resolve({ ok: true });
     });
   });
-});
+}
+
+ipcMain.handle('connect-port', async (event, settings) => openConnection(settings || {}));
+
+ipcMain.handle('disconnect-port', async (event, { tabId } = {}) => closeConnectionAsync(tabId));
 
 // ---- Delivery Photos IPC handlers ----
 // See the "Delivery Photos" block above for the worker process itself; these
@@ -841,4 +850,163 @@ ipcMain.handle('open-delivery-photos-logs-folder', async () => {
   if (!fs.existsSync(logsDir)) return { ok: false, error: 'There are no logs yet - the Delivery Photos service has not run on this PC.' };
   const error = await shell.openPath(logsDir);
   return error ? { ok: false, error } : { ok: true };
+});
+
+// ---- Remote Admin ----
+//
+// Lets the COM connections be checked and controlled from another PC's
+// browser on the local network. Like Delivery Photos it runs as a SEPARATE,
+// isolated child process (remote-admin/admin-entry.js) - TLS, HTTP and
+// sign-in all happen there, never in this process, which reads the serial
+// ports. That process can only ask for one of the fixed actions in
+// remote-admin/actions.js, which validates everything again here and then
+// calls the same openConnection()/closeConnectionAsync()/settings code the
+// Windows app's own tabs use.
+//
+// Off until it is switched on AND an admin password has been set, both only
+// from this Windows app (never from Remote Admin itself).
+const REMOTE_ADMIN_HOME = () => path.join(app.getPath('userData'), 'remote-admin');
+const REMOTE_ADMIN_ENTRY = path.join(__dirname, 'remote-admin', 'admin-entry.js');
+const REMOTE_ADMIN_RESTART_DELAY_MS = 3000;
+
+const remoteAdmin = {
+  child: null,
+  status: { state: 'off' },
+  stoppedDeliberately: false,
+  restartTimer: null
+};
+
+const adminActions = createAdminActions({
+  loadSettings: loadSettingsFromDisk,
+  saveSettings: (settings) => {
+    const saved = saveSettingsToDisk(settings);
+    // The Windows app's tabs follow the change straight away.
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('com-settings-changed', saved);
+    return saved;
+  },
+  listPorts: listSerialPorts,
+  connectionState: (tabId) => {
+    const conn = connections.get(tabId);
+    return { ...scannerState.get(tabId), connected: Boolean(conn && conn.port && conn.port.isOpen) };
+  },
+  openConnection: (tab, apiUrl) => openConnection({ tabId: tab.id, path: tab.comPort, baudRate: tab.baudRate, stationKey: tab.stationKey, apiUrl, source: 'Remote Admin' }),
+  closeConnection: (tabId) => closeConnectionAsync(tabId, 'Remote Admin')
+});
+
+function remoteAdminPaths() {
+  const home = REMOTE_ADMIN_HOME();
+  return { home, config: remoteAdminConfig.configPath(home), password: remoteAdminConfig.passwordPath(home), certs: remoteAdminConfig.certsDir(home) };
+}
+
+function sendRemoteAdminStatus() {
+  if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('remote-admin-status', remoteAdmin.status);
+}
+
+function startRemoteAdmin() {
+  if (remoteAdmin.child) return;
+  clearTimeout(remoteAdmin.restartTimer);
+  remoteAdmin.stoppedDeliberately = false;
+
+  const child = fork(REMOTE_ADMIN_ENTRY, [], {
+    env: { ...process.env, REMOTE_ADMIN_HOME: REMOTE_ADMIN_HOME(), REMOTE_ADMIN_LOGS_DIR: COM_LOGS_DIR() },
+    stdio: ['ignore', 'ignore', 'ignore', 'ipc']
+  });
+  remoteAdmin.child = child;
+
+  child.on('message', (message) => {
+    if (!message || typeof message !== 'object') return;
+    if (message.event === 'status') {
+      remoteAdmin.status = message.status;
+      sendRemoteAdminStatus();
+      return;
+    }
+    if (message.type === 'request' && typeof message.requestId === 'string') {
+      adminActions.handle(String(message.action || ''), message.params).then((reply) => {
+        if (child.connected) child.send({ type: 'response', requestId: message.requestId, reply });
+      });
+    }
+  });
+
+  child.on('exit', () => {
+    if (remoteAdmin.child === child) remoteAdmin.child = null;
+    if (remoteAdmin.stoppedDeliberately) return;
+    remoteAdmin.status = { state: 'restarting', lastError: 'It stopped unexpectedly.' };
+    sendRemoteAdminStatus();
+    remoteAdmin.restartTimer = setTimeout(startRemoteAdmin, REMOTE_ADMIN_RESTART_DELAY_MS);
+  });
+}
+
+function stopRemoteAdmin() {
+  clearTimeout(remoteAdmin.restartTimer);
+  remoteAdmin.stoppedDeliberately = true;
+  const child = remoteAdmin.child;
+  if (!child) return;
+  if (child.connected) child.send({ cmd: 'stop' });
+  setTimeout(() => {
+    if (remoteAdmin.child === child) child.kill('SIGKILL'); // did not exit gracefully in time
+  }, 5000).unref();
+}
+
+// Starts, reloads or stops the Remote Admin process to match its settings.
+function applyRemoteAdminSettings() {
+  const paths = remoteAdminPaths();
+  const config = remoteAdminConfig.loadAdminConfig(paths.config);
+  const hasPassword = Boolean(remoteAdminConfig.readPasswordRecord(paths.password));
+  if (config.enabled && hasPassword) {
+    if (remoteAdmin.child) remoteAdmin.child.send({ cmd: 'reload' });
+    else startRemoteAdmin();
+    return;
+  }
+  stopRemoteAdmin();
+  remoteAdmin.status = { state: 'off', lastError: config.enabled && !hasPassword ? 'Set an admin password to switch Remote Admin on.' : '' };
+  sendRemoteAdminStatus();
+}
+
+app.whenReady().then(() => applyRemoteAdminSettings());
+app.on('before-quit', () => stopRemoteAdmin());
+
+ipcMain.handle('get-remote-admin-settings', async () => {
+  const paths = remoteAdminPaths();
+  const config = remoteAdminConfig.loadAdminConfig(paths.config);
+  const record = remoteAdminConfig.readPasswordRecord(paths.password);
+  return {
+    config,
+    passwordSetAt: record ? record.setAt || 'unknown' : null,
+    status: remoteAdmin.status,
+    urls: adminUrls(config.port),
+    caFingerprint: readCaFingerprint(paths.certs)
+  };
+});
+
+ipcMain.handle('save-remote-admin-settings', async (event, raw) => {
+  const result = remoteAdminConfig.validateAdminConfig(raw || {});
+  if (!result.ok) return { ok: false, errors: result.errors };
+  const paths = remoteAdminPaths();
+  if (result.config.enabled && !remoteAdminConfig.readPasswordRecord(paths.password)) {
+    return { ok: false, errors: ['Set an admin password before switching Remote Admin on.'] };
+  }
+  remoteAdminConfig.saveAdminConfig(result.config, paths.config);
+  comLogger.info(`Remote Admin ${result.config.enabled ? `switched on (port ${result.config.port})` : 'switched off'} from this PC.`);
+  applyRemoteAdminSettings();
+  return { ok: true, config: result.config, urls: adminUrls(result.config.port) };
+});
+
+// Only the hash is stored (see remote-admin/admin-auth.js); the password
+// itself is never logged or kept. Changing it signs every browser out.
+ipcMain.handle('set-remote-admin-password', async (event, { password, confirmPassword } = {}) => {
+  const check = validatePassword(password);
+  if (!check.ok) return { ok: false, error: check.error };
+  if (password !== confirmPassword) return { ok: false, error: 'The two passwords do not match.' };
+  const record = await hashPassword(password);
+  remoteAdminConfig.savePasswordRecord(record, remoteAdminPaths().password);
+  if (remoteAdmin.child && remoteAdmin.child.connected) remoteAdmin.child.send({ cmd: 'revoke-sessions' });
+  comLogger.info('Remote Admin password changed from this PC - all remote sessions signed out.');
+  applyRemoteAdminSettings();
+  return { ok: true, setAt: record.setAt };
+});
+
+ipcMain.handle('revoke-remote-admin-sessions', async () => {
+  if (!remoteAdmin.child || !remoteAdmin.child.connected) return { ok: true };
+  remoteAdmin.child.send({ cmd: 'revoke-sessions' });
+  return { ok: true };
 });

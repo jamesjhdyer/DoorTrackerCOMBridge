@@ -77,7 +77,11 @@ function generateCa() {
   return { keyPem: forge.pki.privateKeyToPem(keys.privateKey), certPem: forge.pki.certificateToPem(cert) };
 }
 
-function generateLeaf(hostname, caKeyPem, caCertPem) {
+// `extraAltNames` (host names and/or IP addresses) is used only by Remote
+// Admin's own certificate (see ../remote-admin/admin-certs.js), which must
+// also match this PC's computer name and LAN addresses; Delivery Photos never
+// passes any.
+function generateLeaf(hostname, caKeyPem, caCertPem, extraAltNames = []) {
   const caKey = forge.pki.privateKeyFromPem(caKeyPem);
   const caCert = forge.pki.certificateFromPem(caCertPem);
 
@@ -100,7 +104,15 @@ function generateLeaf(hostname, caKeyPem, caCertPem) {
     // too, purely so this program's own machine can also reach the local
     // server directly (for the "Test Network Storage" style checks) without
     // needing a second certificate.
-    { name: 'subjectAltName', altNames: [{ type: 2, value: hostname }, { type: 2, value: 'localhost' }, { type: 7, ip: '127.0.0.1' }] },
+    {
+      name: 'subjectAltName',
+      altNames: [
+        { type: 2, value: hostname },
+        { type: 2, value: 'localhost' },
+        { type: 7, ip: '127.0.0.1' },
+        ...extraAltNames.map((name) => (/^[0-9.]+$/.test(name) ? { type: 7, ip: name } : { type: 2, value: name }))
+      ]
+    },
     { name: 'subjectKeyIdentifier' }
   ]);
   cert.sign(caKey, forge.md.sha256.create());
@@ -231,4 +243,4 @@ function randomUuidLike() {
   return require('node:crypto').randomUUID().toUpperCase();
 }
 
-module.exports = { ensureCertificates, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames, randomSerial, CA_COMMON_NAME };
+module.exports = { ensureCertificates, generateCa, generateLeaf, buildTrustProfileMobileConfig, certExpiresWithinDays, certSubjectAltNames, randomSerial, CA_COMMON_NAME };

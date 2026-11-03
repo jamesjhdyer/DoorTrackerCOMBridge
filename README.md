@@ -108,6 +108,77 @@ drive the real iPad page in headless Google Chrome
 (`src/delivery-photos/offline-browser.test.js`), skipping cleanly if Chrome is
 not installed.
 
+## Remote Admin (COM connections from another PC)
+
+Lets the scanner connections be checked and controlled from a normal
+browser on another computer on the company network (e.g. upstairs) - no
+Remote Desktop, no domain membership needed. It covers the **COM
+connections only**: status (connected/disconnected/error, last scan, last
+error), Connect / Disconnect / Reconnect one port, Restart scanner
+subsystem (every connected or failed port), Refresh ports, edit a
+connection's COM port / station / baud rate, add or remove a connection,
+and the recent COM Bridge log and Remote Admin audit log. It cannot send
+anything to a serial port, run programs, browse files, reboot the PC, or
+change Delivery Photos.
+
+**Switching it on** (Windows app, **Remote Admin** tab, on this PC only):
+
+1. Set an admin password (at least 8 characters - an 8-digit PIN is the
+   shortest accepted). Only a salted scrypt hash is stored.
+2. Tick **Allow Remote Admin from the local network**, keep port **8445**
+   (or choose another) and Save.
+3. On the other PC open one of the addresses shown, e.g.
+   `https://<COMPUTERNAME>:8445/admin/` or `https://<laptop IP>:8445/admin/`.
+
+Remote Admin can never change its own password, port or on/off switch -
+only this Windows app can. Changing the password signs every browser out;
+**Sign Out All Remote Sessions** does the same without changing it.
+
+**Security, in brief.** It runs as its own forked process
+(`src/remote-admin/admin-entry.js`), supervised like Delivery Photos, so
+TLS/HTTP/sign-in never run inside the process that reads the serial ports.
+That process can only ask the app to do one of a fixed list of actions
+(`src/remote-admin/actions.js`), which re-validates everything with the
+same settings code the Windows tabs use (`src/com-settings.js`,
+`src/com-options.js`). Connections from anything but a private / link-local
+/ loopback address are dropped before TLS; the Host header must name this
+PC; sign-in is limited to 5 failures per address (25 overall) per 15
+minutes; sessions are HttpOnly + Secure + SameSite=Strict cookies that end
+after 30 idle minutes or 8 hours; every change needs a same-origin Origin
+header, a JSON body, the session's CSRF token, and stays under 8 KB.
+Disruptive actions (disconnecting or reconnecting a working port, changing
+a COM port, removing a connection, restarting all) must be confirmed. Every
+sign-in and action is written to `logs/remote-admin-YYYY-MM-DD.log` with
+the client's IP and the outcome - never a password or token. An iPad's
+Delivery Photos pairing token grants nothing here.
+
+**Windows Firewall.** The app never changes the firewall. Remote Admin
+needs inbound TCP on its port (default 8445) from the local network. Windows
+may show its own "allow access" prompt the first time it listens: allow
+**Private** networks only, never Public. Or add the rule yourself in an
+elevated PowerShell:
+
+```powershell
+New-NetFirewallRule -DisplayName "Door Tracker COM Bridge Remote Admin" -Direction Inbound -Protocol TCP -LocalPort 8445 -Action Allow -Profile Private -RemoteAddress LocalSubnet
+```
+
+A PC that is not joined to the domain never uses the Domain profile, so
+this rule applies only while the laptop's network is set to **Private**.
+If Windows has it as Public, the rule does not apply. Changing that is
+deliberately left to you.
+
+**Certificate warning.** Remote Admin has its own small local certificate
+authority (same code as Delivery Photos, its own files). To avoid the
+browser warning on the other PC, download `/admin/ca.crt` from the admin
+page, check its SHA-256 fingerprint matches the one in the Remote Admin
+tab, and import it into that PC's *Trusted Root Certification Authorities*
+store. Otherwise expect the warning on each visit.
+
+**Not included:** restarting the whole COM Bridge app remotely. A portable
+`.exe` cannot reliably relaunch itself (it runs from a temporary extracted
+copy), so it could leave the app not running with nobody downstairs to
+start it again. Restart scanner subsystem covers the scanner side.
+
 ## Build the Windows version
 
 ```bash

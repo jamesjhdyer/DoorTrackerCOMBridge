@@ -57,7 +57,7 @@
   <datalist id="manual-scan-station-list"></datalist>
 
   <div class="tab-bar" id="tab-bar">
-    <!-- Dashboard and Delivery Photos tab buttons + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
+    <!-- Dashboard, Delivery Photos and Remote Admin tab buttons + one button per connection tab inserted here by renderer.js, always kept before add-tab-btn -->
     <button id="add-tab-btn" class="add-tab-btn" title="Add a new COM port connection">+</button>
   </div>
 
@@ -155,6 +155,67 @@
     </div>
   </section>
 
+  <section id="panel-remote-admin" class="tab-panel">
+    <div class="log-section">
+      <h2>Remote Admin</h2>
+      <p class="hint">Check and control this PC's scanner connections from a browser on another computer on the company network (for example upstairs), without Remote Desktop. It only covers the COM connections - it cannot run programs, browse files or change anything else on this PC.</p>
+      <div class="status-bar">
+        <span>Remote Admin:</span>
+        <span id="ra-status-badge" class="badge disconnected">Off</span>
+        <span id="ra-status-message" class="status-message"></span>
+      </div>
+      <table class="dp-facts">
+        <tbody>
+          <tr><td>Open in a browser</td><td id="ra-urls">-</td></tr>
+          <tr><td>Admin password</td><td id="ra-password-state">Not set</td></tr>
+          <tr><td>Certificate fingerprint (SHA-256)</td><td id="ra-fingerprint" class="ra-fingerprint">-</td></tr>
+        </tbody>
+      </table>
+      <div class="field buttons">
+        <button id="ra-revoke-btn">Sign Out All Remote Sessions</button>
+      </div>
+    </div>
+
+    <div class="log-section">
+      <h2>Remote Admin - Password</h2>
+      <p class="hint">Needed to sign in to Remote Admin. At least 8 characters (an 8-digit PIN is the shortest accepted). Only a secure hash is stored on this PC. Setting a new password signs every browser out.</p>
+      <div class="controls">
+        <div class="field">
+          <label for="ra-password-input">New admin password</label>
+          <input id="ra-password-input" type="password" autocomplete="new-password" maxlength="128" />
+        </div>
+        <div class="field">
+          <label for="ra-password-confirm">Confirm password</label>
+          <input id="ra-password-confirm" type="password" autocomplete="new-password" maxlength="128" />
+        </div>
+        <div class="field buttons">
+          <button id="ra-password-btn">Set Password</button>
+        </div>
+        <span id="ra-password-flash" class="saved-flash"></span>
+      </div>
+      <p id="ra-password-error" class="dp-save-error" hidden></p>
+    </div>
+
+    <div class="log-section">
+      <h2>Remote Admin - Set Up</h2>
+      <div class="controls">
+        <div class="field">
+          <label><input type="checkbox" id="ra-enabled-input" /> Allow Remote Admin from the local network</label>
+        </div>
+        <div class="field">
+          <label for="ra-port-input">Port</label>
+          <input id="ra-port-input" type="number" min="1024" max="65535" style="width: 90px" />
+        </div>
+        <div class="field buttons">
+          <button id="ra-save-btn">Save</button>
+        </div>
+        <span id="ra-saved-flash" class="saved-flash"></span>
+      </div>
+      <p id="ra-save-error" class="dp-save-error" hidden></p>
+      <p class="hint">Windows Firewall must allow inbound TCP on this port for the Private (and/or Domain) network profile only - this app never changes the firewall itself. Connections from anything other than a private/local network address are refused even if the firewall lets them through. To avoid a certificate warning on the other PC, open the address once, download <code>/admin/ca.crt</code>, check its fingerprint matches the one above, and import it into that PC's "Trusted Root Certification Authorities" store.</p>
+    </div>
+  </section>
+
   <section id="panel-dashboard" class="tab-panel">
     <div class="log-section">
       <h2>Connections</h2>
@@ -224,16 +285,7 @@
 
         <div class="field">
           <label>Baud Rate</label>
-          <select class="baud-select">
-            <option value="1200">1200</option>
-            <option value="2400">2400</option>
-            <option value="4800">4800</option>
-            <option value="9600">9600</option>
-            <option value="19200" selected>19200</option>
-            <option value="38400">38400</option>
-            <option value="57600">57600</option>
-            <option value="115200">115200</option>
-          </select>
+          <select class="baud-select"><!-- options from com-options.js's BAUD_RATES --></select>
         </div>
 
         <div class="field">
@@ -287,6 +339,7 @@
     </section>
   </template>
 
+  <script src="com-options.js"></script>
   <script src="renderer.js"></script>
 </body>
 </html>

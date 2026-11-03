@@ -26,6 +26,10 @@ contextBridge.exposeInMainWorld('comBridge', {
   },
   onPrintJobEvent: (callback) => {
     ipcRenderer.on('print-job-event', (event, data) => callback(data));
+  },
+  // A connection was changed from Remote Admin - the full, saved settings.
+  onSettingsChanged: (callback) => {
+    ipcRenderer.on('com-settings-changed', (event, settings) => callback(settings));
   }
 });
 
@@ -51,5 +55,19 @@ contextBridge.exposeInMainWorld('deliveryPhotos', {
   },
   onSessionFiled: (callback) => {
     ipcRenderer.on('delivery-photos-session-filed', () => callback());
+  }
+});
+
+// Remote Admin's switch, port and password - set only here, on this PC (see
+// main.js's "Remote Admin" section). The password goes one way only: it is
+// hashed in the main process and never read back.
+contextBridge.exposeInMainWorld('remoteAdmin', {
+  getSettings: () => ipcRenderer.invoke('get-remote-admin-settings'),
+  saveSettings: (settings) => ipcRenderer.invoke('save-remote-admin-settings', settings),
+  setPassword: (password, confirmPassword) => ipcRenderer.invoke('set-remote-admin-password', { password, confirmPassword }),
+  revokeSessions: () => ipcRenderer.invoke('revoke-remote-admin-sessions'),
+
+  onStatus: (callback) => {
+    ipcRenderer.on('remote-admin-status', (event, status) => callback(status));
   }
 });

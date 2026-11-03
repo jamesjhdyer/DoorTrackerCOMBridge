@@ -1,0 +1,123 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <meta name="referrer" content="no-referrer" />
+  <title>COM Bridge Remote Admin</title>
+  <link rel="stylesheet" href="/admin/admin.css" />
+</head>
+<body>
+  <header class="topbar">
+    <div>
+      <h1>Door Tracker COM Bridge</h1>
+      <p class="subtitle">Remote Admin</p>
+    </div>
+    <button id="logout-btn" type="button" hidden>Sign out</button>
+  </header>
+
+  <section id="login-view" class="card login" hidden>
+    <h2>Sign in</h2>
+    <p id="login-note" class="hint">Enter the admin password set in the COM Bridge app on the workshop PC.</p>
+    <form id="login-form" autocomplete="on">
+      <label for="login-password">Admin password</label>
+      <input id="login-password" type="password" autocomplete="current-password" required maxlength="128" />
+      <button type="submit" id="login-btn">Sign in</button>
+    </form>
+    <p id="login-error" class="error" role="alert" hidden></p>
+  </section>
+
+  <main id="app-view" hidden>
+    <nav class="sections" aria-label="Sections">
+      <a href="#overview">Overview</a>
+      <a href="#scanners">Scanners</a>
+      <a href="#logs">Logs</a>
+    </nav>
+
+    <p id="message" class="message" role="status" aria-live="polite" hidden></p>
+
+    <section id="overview" class="card">
+      <h2>Overview</h2>
+      <dl class="facts">
+        <dt>Scanner service</dt><dd id="ov-service">-</dd>
+        <dt>Connected scanners</dt><dd id="ov-connected">-</dd>
+        <dt>Connections with errors</dt><dd id="ov-errors">-</dd>
+        <dt>Last scan</dt><dd id="ov-last-scan">-</dd>
+      </dl>
+      <p class="hint">Updated <span id="ov-updated">-</span></p>
+    </section>
+
+    <section id="scanners" class="card">
+      <div class="card-header">
+        <h2>Scanners</h2>
+        <div class="toolbar">
+          <button id="refresh-ports-btn" type="button">Refresh ports</button>
+          <button id="add-btn" type="button">Add connection</button>
+          <button id="restart-all-btn" type="button" class="danger">Restart scanner subsystem</button>
+        </div>
+      </div>
+      <p id="ports-line" class="hint">Available COM ports: (press Refresh ports)</p>
+      <div class="table-wrap">
+        <table>
+          <thead>
+            <tr>
+              <th>COM port</th>
+              <th>Station</th>
+              <th>Baud</th>
+              <th>Status</th>
+              <th>Last scan</th>
+              <th>Error</th>
+              <th>Actions</th>
+            </tr>
+          </thead>
+          <tbody id="scanners-body"><tr><td colspan="7">Loading…</td></tr></tbody>
+        </table>
+      </div>
+
+      <form id="edit-form" class="edit-form" hidden>
+        <h3 id="edit-title">Edit connection</h3>
+        <div class="edit-fields">
+          <label>COM port <select id="edit-port" required></select></label>
+          <label>Station <select id="edit-station" required></select></label>
+          <label>Baud rate <select id="edit-baud" required></select></label>
+        </div>
+        <div class="toolbar">
+          <button type="submit" id="edit-save">Save</button>
+          <button type="button" id="edit-cancel">Cancel</button>
+        </div>
+        <p id="edit-error" class="error" role="alert" hidden></p>
+      </form>
+    </section>
+
+    <section id="logs" class="card">
+      <div class="card-header">
+        <h2>Logs</h2>
+        <div class="toolbar">
+          <label>Log
+            <select id="log-source">
+              <option value="com-bridge">COM Bridge</option>
+              <option value="remote-admin">Remote Admin audit</option>
+            </select>
+          </label>
+          <label>Show
+            <select id="log-limit">
+              <option value="50">last 50</option>
+              <option value="100" selected>last 100</option>
+              <option value="200">last 200</option>
+            </select>
+          </label>
+          <button id="logs-refresh-btn" type="button">Refresh</button>
+        </div>
+      </div>
+      <div class="table-wrap">
+        <table class="logs">
+          <thead><tr><th>Time</th><th>Severity</th><th>Component</th><th>Message</th></tr></thead>
+          <tbody id="logs-body"><tr><td colspan="4">-</td></tr></tbody>
+        </table>
+      </div>
+    </section>
+  </main>
+
+  <script src="/admin/admin.js"></script>
+</body>
+</html>

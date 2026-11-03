@@ -446,3 +446,13 @@ tbody tr:hover {
 .dp-role-badge {
   font-weight: 600;
 }
+
+.ra-fingerprint {
+  font-family: Consolas, "SF Mono", monospace;
+  font-size: 12px;
+  word-break: break-all;
+}
+
+#ra-urls {
+  white-space: pre-line;
+}
