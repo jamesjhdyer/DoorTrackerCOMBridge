@@ -26,10 +26,16 @@ jobs:
       - name: Check out repository
         uses: actions/checkout@v4
 
-      - name: Set up Node.js LTS
+      # Pinned to Node 24, not 'lts/*': when Node 26 became LTS (2026-10-28),
+      # Electron 31's postinstall (extract-zip 2.0.1 / yauzl 2.10.0) began
+      # stopping part-way through unpacking under Node 26 and still exiting 0,
+      # so "npm ci" looked fine but left node_modules/electron with no
+      # path.txt - and require('electron') then throws. Move to a newer Node
+      # only together with an Electron upgrade that installs cleanly on it.
+      - name: Set up Node.js 24
         uses: actions/setup-node@v4
         with:
-          node-version: 'lts/*'
+          node-version: '24'
 
       - name: Install dependencies
         shell: bash
