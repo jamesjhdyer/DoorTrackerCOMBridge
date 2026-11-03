@@ -71,3 +71,20 @@ contextBridge.exposeInMainWorld('remoteAdmin', {
     ipcRenderer.on('remote-admin-status', (event, status) => callback(status));
   }
 });
+
+// The Updates tab (see main.js's "Updates" section). Local window only -
+// there is no Remote Admin equivalent.
+contextBridge.exposeInMainWorld('appUpdates', {
+  getState: () => ipcRenderer.invoke('updates-get-state'),
+  check: () => ipcRenderer.invoke('updates-check'),
+  listReleases: () => ipcRenderer.invoke('updates-list'),
+  download: (version, confirmDowngrade) => ipcRenderer.invoke('updates-download', { version, confirmDowngrade }),
+  installWarning: () => ipcRenderer.invoke('updates-install-warning'),
+  install: (confirmed) => ipcRenderer.invoke('updates-install', { confirmed }),
+  cancel: () => ipcRenderer.invoke('updates-cancel'),
+  openNotes: (url) => ipcRenderer.invoke('updates-open-notes', url),
+
+  onState: (callback) => {
+    ipcRenderer.on('update-state', (event, state) => callback(state));
+  }
+});

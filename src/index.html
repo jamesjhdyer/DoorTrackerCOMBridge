@@ -155,6 +155,43 @@
     </div>
   </section>
 
+  <section id="panel-updates" class="tab-panel">
+    <div class="log-section">
+      <h2>Updates</h2>
+      <p class="hint">Installs a packaged release of this app from its GitHub Releases page. Nothing is checked, downloaded or installed unless you press a button here. Settings, logs, certificates and paired iPads are kept.</p>
+      <table class="dp-facts">
+        <tbody>
+          <tr><td>Current version</td><td id="up-current">-</td></tr>
+          <tr><td>Latest stable version</td><td id="up-latest">Not checked yet</td></tr>
+          <tr><td>Released</td><td id="up-released">-</td></tr>
+          <tr><td>Status</td><td id="up-status">-</td></tr>
+        </tbody>
+      </table>
+      <div class="up-progress-row" id="up-progress-row" hidden>
+        <progress id="up-progress" max="100" value="0"></progress>
+        <span id="up-progress-text"></span>
+      </div>
+      <p id="up-unsupported" class="dp-save-error" hidden></p>
+      <div class="field buttons">
+        <button id="up-check-btn">Check for Updates</button>
+        <button id="up-download-btn" disabled>Download Update</button>
+        <button id="up-install-btn" hidden>Restart and Install</button>
+        <button id="up-cancel-btn" hidden>Cancel</button>
+        <button id="up-previous-btn">Previous Versions</button>
+        <button id="up-notes-btn" disabled>Release Notes</button>
+      </div>
+    </div>
+
+    <div class="log-section" id="up-previous" hidden>
+      <h2>Previous Versions</h2>
+      <p class="hint">Installing an older version is a deliberate rollback: settings are kept, but an older version may not understand options added later.</p>
+      <table class="dp-devices">
+        <thead><tr><th>Version</th><th>Released</th><th></th><th></th></tr></thead>
+        <tbody id="up-previous-body"><tr><td colspan="4">-</td></tr></tbody>
+      </table>
+    </div>
+  </section>
+
   <section id="panel-remote-admin" class="tab-panel">
     <div class="log-section">
       <h2>Remote Admin</h2>

@@ -61,6 +61,7 @@ const tabTemplate = document.getElementById('tab-panel-template');
 const dashboardPanel = document.getElementById('panel-dashboard');
 const deliveryPhotosPanel = document.getElementById('panel-delivery-photos');
 const remoteAdminPanel = document.getElementById('panel-remote-admin');
+const updatesPanel = document.getElementById('panel-updates');
 const connectionsBody = document.getElementById('connections-body');
 const recentScansBody = document.getElementById('recent-scans-body');
 const clearRecentBtn = document.getElementById('clear-recent-btn');
@@ -814,6 +815,7 @@ reprintTestBtn.addEventListener('click', async () => {
 pinnedTabs.set('dashboard', { panel: dashboardPanel, button: buildPinnedTabButton('dashboard', 'Dashboard') });
 pinnedTabs.set('delivery-photos', { panel: deliveryPhotosPanel, button: buildPinnedTabButton('delivery-photos', 'Delivery Photos') });
 pinnedTabs.set('remote-admin', { panel: remoteAdminPanel, button: buildPinnedTabButton('remote-admin', 'Remote Admin') });
+pinnedTabs.set('updates', { panel: updatesPanel, button: buildPinnedTabButton('updates', 'Updates') });
 setActiveTab('dashboard');
 
 // ---- Static event listeners ----
@@ -1257,3 +1259,152 @@ ra.revokeBtn.addEventListener('click', async () => {
 
 window.remoteAdmin.onStatus((status) => renderRemoteAdminStatus(status));
 refreshRemoteAdminSettings();
+
+// ---- Updates panel ----
+// Check / download / install a release from GitHub Releases (see main.js's
+// "Updates" section). Every step is a button press here; downgrades and the
+// final install are confirmed first, and the main process refuses either
+// without that confirmation.
+
+const up = {
+  current: document.getElementById('up-current'),
+  latest: document.getElementById('up-latest'),
+  released: document.getElementById('up-released'),
+  status: document.getElementById('up-status'),
+  progressRow: document.getElementById('up-progress-row'),
+  progress: document.getElementById('up-progress'),
+  progressText: document.getElementById('up-progress-text'),
+  unsupported: document.getElementById('up-unsupported'),
+  checkBtn: document.getElementById('up-check-btn'),
+  downloadBtn: document.getElementById('up-download-btn'),
+  installBtn: document.getElementById('up-install-btn'),
+  cancelBtn: document.getElementById('up-cancel-btn'),
+  previousBtn: document.getElementById('up-previous-btn'),
+  notesBtn: document.getElementById('up-notes-btn'),
+  previousSection: document.getElementById('up-previous'),
+  previousBody: document.getElementById('up-previous-body')
+};
+
+const upDateFormat = new Intl.DateTimeFormat('en-GB', { day: '2-digit', month: '2-digit', year: 'numeric' });
+let upState = null;
+
+function upFormatDate(iso) {
+  const date = iso ? new Date(iso) : null;
+  return date && !Number.isNaN(date.getTime()) ? upDateFormat.format(date) : '-';
+}
+
+function renderUpdateState(state) {
+  upState = state;
+  const busy = state.status === 'checking' || state.status === 'downloading' || state.status === 'installing';
+  up.current.textContent = state.currentVersion || '-';
+  if (state.latest) {
+    up.latest.textContent = state.latest.version;
+    up.released.textContent = upFormatDate(state.latest.publishedAt);
+  }
+  up.status.textContent = state.message || (state.status === 'idle' ? 'Not checked yet' : state.status);
+  up.status.className = state.status === 'error' || state.status === 'offline' ? 'dp-save-error' : '';
+
+  up.progressRow.hidden = state.status !== 'downloading';
+  if (state.progress) {
+    up.progress.value = state.progress.percent || 0;
+    const mb = (n) => (n / (1024 * 1024)).toFixed(1);
+    up.progressText.textContent = state.progress.total ? `${state.progress.percent}% (${mb(state.progress.transferred || 0)} of ${mb(state.progress.total)} MB)` : `${state.progress.percent || 0}%`;
+  }
+
+  const canInstall = state.canInstall !== false;
+  up.unsupported.hidden = canInstall;
+  up.unsupported.textContent = state.unsupportedReason || '';
+  up.checkBtn.disabled = busy;
+  up.downloadBtn.disabled = busy || !canInstall || state.status !== 'available';
+  up.installBtn.hidden = state.status !== 'downloaded';
+  up.installBtn.disabled = !canInstall;
+  up.cancelBtn.hidden = state.status !== 'downloaded';
+  up.notesBtn.disabled = !(state.latest && state.latest.notesUrl);
+}
+
+async function refreshUpdateState() {
+  renderUpdateState(await window.appUpdates.getState());
+}
+
+// Downloads one chosen version; an older one is confirmed first.
+async function downloadUpdateVersion(version, isOlder) {
+  let confirmDowngrade = false;
+  if (isOlder) {
+    if (!confirm(`You are about to downgrade from ${upState.currentVersion} to ${version}.\n\nYour settings will be preserved, but older versions may not understand newer configuration options.\n\nContinue?`)) return;
+    confirmDowngrade = true;
+  }
+  const result = await window.appUpdates.download(version, confirmDowngrade);
+  await refreshUpdateState();
+  if (!result.ok && result.message) up.status.textContent = result.message;
+}
+
+up.checkBtn.addEventListener('click', async () => {
+  up.checkBtn.disabled = true;
+  try {
+    await window.appUpdates.check();
+  } finally {
+    await refreshUpdateState();
+  }
+});
+
+up.downloadBtn.addEventListener('click', () => {
+  if (upState && upState.latest) downloadUpdateVersion(upState.latest.version, false);
+});
+
+up.installBtn.addEventListener('click', async () => {
+  const warning = await window.appUpdates.installWarning();
+  if (!warning.ok) {
+    alert('Download an update first.');
+    return;
+  }
+  if (!confirm(warning.message)) return;
+  const result = await window.appUpdates.install(true);
+  if (!result.ok) {
+    up.status.textContent = result.message;
+    await refreshUpdateState();
+  }
+});
+
+up.cancelBtn.addEventListener('click', async () => {
+  await window.appUpdates.cancel();
+  await refreshUpdateState();
+});
+
+up.notesBtn.addEventListener('click', () => {
+  if (upState && upState.latest && upState.latest.notesUrl) window.appUpdates.openNotes(upState.latest.notesUrl);
+});
+
+up.previousBtn.addEventListener('click', async () => {
+  up.previousSection.hidden = false;
+  up.previousBody.innerHTML = '';
+  const loading = up.previousBody.insertRow().insertCell();
+  loading.colSpan = 4;
+  loading.textContent = 'Loading releases from GitHub…';
+  const result = await window.appUpdates.listReleases();
+  up.previousBody.innerHTML = '';
+  if (!result.ok || result.releases.length === 0) {
+    const cell = up.previousBody.insertRow().insertCell();
+    cell.colSpan = 4;
+    cell.textContent = result.ok ? 'No installable releases have been published yet.' : result.message;
+    return;
+  }
+  for (const release of result.releases) {
+    const row = up.previousBody.insertRow();
+    row.insertCell().textContent = release.version;
+    row.insertCell().textContent = upFormatDate(release.publishedAt);
+    row.insertCell().textContent = [release.isLatest ? 'Latest' : '', release.isCurrent ? 'Installed' : ''].filter(Boolean).join(', ');
+    const actionCell = row.insertCell();
+    if (!release.isCurrent) {
+      const button = document.createElement('button');
+      button.textContent = release.isOlder ? 'Download (downgrade)' : 'Download';
+      button.disabled = upState && upState.canInstall === false;
+      button.addEventListener('click', () => downloadUpdateVersion(release.version, release.isOlder));
+      actionCell.appendChild(button);
+    }
+  }
+});
+
+// Progress and status pushed by the main process; whether this build can
+// install at all does not change while it runs, so it is kept from the last full read.
+window.appUpdates.onState((state) => renderUpdateState({ ...state, canInstall: upState ? upState.canInstall : true, unsupportedReason: upState ? upState.unsupportedReason : '' }));
+refreshUpdateState();

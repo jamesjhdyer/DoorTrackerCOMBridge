@@ -1,7 +1,7 @@
 {
   "name": "door-tracker-com-bridge",
   "productName": "Door Tracker COM Bridge",
-  "version": "1.2.0",
+  "version": "1.3.0",
   "description": "Desktop app for the workshop PC: NETUM NT-1228BL scanner input over a Windows COM/serial port, Zebra label printing, and the Delivery Photos local service (iPad camera -> this PC -> the company network drive, entirely on the workshop network - no cloud, no website dependency).",
   "main": "src/main.js",
   "private": true,
@@ -14,12 +14,14 @@
   },
   "dependencies": {
     "bonjour-service": "^1.4.4",
+    "electron-updater": "^6.8.11",
     "node-forge": "^1.4.0",
     "pngjs": "^7.0.0",
     "serialport": "^12.0.0",
     "zxing-wasm": "^3.1.4"
   },
   "devDependencies": {
+    "@electron/asar": "^3.4.1",
     "electron": "^31.0.0",
     "electron-builder": "^25.1.8",
     "fake-indexeddb": "^6.2.5",
@@ -60,7 +62,20 @@
     },
     "nsis": {
       "oneClick": false,
-      "allowToChangeInstallationDirectory": true
+      "allowToChangeInstallationDirectory": true,
+      "deleteAppDataOnUninstall": false,
+      "artifactName": "DoorTrackerCOMBridge-Setup-${version}.${ext}"
+    },
+    "publish": [
+      {
+        "provider": "github",
+        "owner": "jamesjhdyer",
+        "repo": "DoorTrackerCOMBridge",
+        "releaseType": "draft"
+      }
+    ],
+    "portable": {
+      "artifactName": "DoorTrackerCOMBridge-Portable-${version}.${ext}"
     }
   },
   "allowScripts": {

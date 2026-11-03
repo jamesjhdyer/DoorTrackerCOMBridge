@@ -22,6 +22,8 @@ const { hashPassword, validatePassword } = require('./remote-admin/admin-auth');
 const { readCaFingerprint } = require('./remote-admin/admin-certs');
 const { adminUrls } = require('./remote-admin/net-guard');
 const { createAdminActions } = require('./remote-admin/actions');
+const { createUpdateController } = require('./updater/update-controller');
+const { fetchReleases, isPathInside, OWNER: UPDATE_OWNER, REPO: UPDATE_REPO } = require('./updater/releases');
 
 let mainWindow = null;
 
@@ -1008,5 +1010,78 @@ ipcMain.handle('set-remote-admin-password', async (event, { password, confirmPas
 ipcMain.handle('revoke-remote-admin-sessions', async () => {
   if (!remoteAdmin.child || !remoteAdmin.child.connected) return { ok: true };
   remoteAdmin.child.send({ cmd: 'revoke-sessions' });
+  return { ok: true };
+});
+
+// ---- Updates (GitHub Releases) ----
+//
+// The Updates tab: check for, download and install a packaged release of
+// this app from this repository's GitHub Releases - newer, or deliberately
+// older to roll back. Every step needs a button press in THIS window; nothing
+// is checked, downloaded or installed in the background, and Remote Admin has
+// no route to any of it. See updater/update-controller.js for the flow and
+// updater/releases.js for which releases may be offered.
+//
+// Installing uses electron-updater's NSIS updater: it verifies the download's
+// SHA-512 against the release's latest.yml, then runs the installer over the
+// existing installation and starts the app again. The installer never touches
+// the user data folder (app.getPath('userData')), where every setting, log,
+// certificate and pairing lives.
+const updaterLogger = createLogger({ dir: COM_LOGS_DIR(), prefix: 'updater' });
+
+function updateInstallSupport() {
+  if (!app.isPackaged) return { ok: false, reason: 'Updates can only be installed by the installed Windows app (this is a development run).' };
+  if (process.platform !== 'win32') return { ok: false, reason: 'Updates can only be installed on Windows.' };
+  if (process.env.PORTABLE_EXECUTABLE_FILE) {
+    return { ok: false, reason: 'This is the portable build, which cannot update itself. Install DoorTrackerCOMBridge-Setup-<version>.exe from GitHub Releases once (it uses the same settings); after that, updates work from here.' };
+  }
+  if (isPathInside(app.getPath('userData'), path.dirname(process.execPath))) {
+    return { ok: false, reason: 'This app\'s settings are stored inside its program folder, so installing could overwrite them - updating is disabled.' };
+  }
+  return { ok: true };
+}
+
+const updates = createUpdateController({
+  currentVersion: app.getVersion(),
+  fetchReleasesJson: () => fetchReleases(),
+  createUpdater: ({ feedUrl, allowDowngrade }) => {
+    // Loaded only when a download is actually started.
+    const { NsisUpdater } = require('electron-updater');
+    const updater = new NsisUpdater({ provider: 'generic', url: feedUrl });
+    updater.autoDownload = false;
+    updater.autoInstallOnAppQuit = false;
+    updater.allowPrerelease = false;
+    updater.allowDowngrade = allowDowngrade;
+    updater.logger = {
+      info: (m) => updaterLogger.info(String(m)),
+      warn: (m) => updaterLogger.warn(String(m)),
+      error: (m) => updaterLogger.error(String(m)),
+      debug: () => {}
+    };
+    return updater;
+  },
+  installSupport: updateInstallSupport,
+  activity: () => ({
+    connectedScanners: Array.from(connections.values()).filter((conn) => conn.port && conn.port.isOpen).length,
+    printJobsActive: printProcessor.queue.length + (printProcessor.processing ? 1 : 0)
+  }),
+  logger: updaterLogger,
+  onState: (state) => {
+    if (mainWindow && !mainWindow.isDestroyed()) mainWindow.webContents.send('update-state', state);
+  }
+});
+
+ipcMain.handle('updates-get-state', async () => updates.getState());
+ipcMain.handle('updates-check', async () => updates.check());
+ipcMain.handle('updates-list', async () => updates.listReleases());
+ipcMain.handle('updates-download', async (event, { version, confirmDowngrade } = {}) => updates.download(String(version || ''), { confirmDowngrade: confirmDowngrade === true }));
+ipcMain.handle('updates-install-warning', async () => updates.installWarning());
+ipcMain.handle('updates-install', async (event, { confirmed } = {}) => updates.install({ confirmed: confirmed === true }));
+ipcMain.handle('updates-cancel', async () => updates.cancelPending());
+// Release notes open in the normal browser - only this repository's release pages.
+ipcMain.handle('updates-open-notes', async (event, url) => {
+  const text = String(url || '');
+  if (!text.startsWith(`https://github.com/${UPDATE_OWNER}/${UPDATE_REPO}/releases/`)) return { ok: false };
+  await shell.openExternal(text);
   return { ok: true };
 });

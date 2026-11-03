@@ -201,21 +201,67 @@ local server can serve them directly. Other scripts available:
 The GitHub Actions build (`.github/workflows/build-windows.yml`) runs the
 full test suite on a real Windows machine first — **a failing test fails the
 whole build**, so a package is never published from code whose tests did not
-pass — then verifies the Delivery Photos web assets really made it into the
-built package, before uploading the artifact.
+pass — then verifies the Delivery Photos web assets, the in-app updater's
+release files (with a `latest.yml` whose SHA-512 really matches the
+installer) and the Remote Admin files really made it into the built package
+(`scripts/verify-package.js`), before uploading the artifact.
 
 ## Where the built files appear
 
 Everything lands in the `dist/` folder at the project root, including:
 
-- `Door Tracker COM Bridge <version>.exe` — portable build, no installation
-  required, just double-click to run.
-- `Door Tracker COM Bridge Setup <version>.exe` — NSIS installer that installs
-  the app and creates shortcuts.
+- `DoorTrackerCOMBridge-Setup-<version>.exe` — NSIS installer that installs
+  the app and creates shortcuts. **Use this for production** - it is the
+  only build the Updates tab can update.
+- `DoorTrackerCOMBridge-Setup-<version>.exe.blockmap` and `latest.yml` —
+  update metadata the in-app updater needs (attach both to every release).
+- `DoorTrackerCOMBridge-Portable-<version>.exe` — portable build, no
+  installation required, for troubleshooting; it cannot update itself.
 - `dist/win-unpacked/` — the raw unpacked app (used internally, not meant for
   distribution).
 
 `dist/` is git-ignored and regenerated on every build.
+
+## Updates (GitHub Releases)
+
+The **Updates** tab installs a packaged release from this repository's
+[GitHub Releases](https://github.com/jamesjhdyer/DoorTrackerCOMBridge/releases) -
+never source code from `main`. Nothing happens on its own: **Check for
+Updates**, **Download Update** and **Restart and Install** are each a button
+press, and the install is confirmed first ("The COM Bridge will close
+briefly…", with the number of open scanner connections and print jobs in
+progress). Remote Admin cannot check for, download or install updates.
+
+- **Which releases count:** published, not drafts, not pre-releases, tagged
+  `vMAJOR.MINOR.PATCH`, and carrying `DoorTrackerCOMBridge-Setup-<version>.exe`
+  and `latest.yml` from this repository's own release. Versions compare
+  numerically (1.10.0 is newer than 1.9.9).
+- **Previous Versions** lists recent stable releases, older ones included;
+  choosing an older one is a rollback and asks for confirmation first. Settings
+  are not converted back - an older version may ignore options added later.
+- **Verification:** the download is checked by electron-updater against the
+  SHA-512 in that release's `latest.yml` before it can be installed; a failed
+  or mismatched download changes nothing. Releases are **not code-signed**.
+- **Install:** electron-updater runs the installer silently over the existing
+  installation and starts the app again. Settings, logs, certificates, paired
+  iPads and Delivery Photos state all live in `%APPDATA%\Door Tracker COM
+  Bridge` and are never touched by installing, upgrading or downgrading
+  (`deleteAppDataOnUninstall` is off). Activity is logged to
+  `logs\updater-YYYY-MM-DD.log` there.
+- **Portable build:** cannot update itself; the tab explains this. Install
+  the Setup exe once instead - it uses the same settings.
+
+### Publishing a release
+
+1. Set `"version"` in `package.json` (e.g. `1.3.0`), run `npm install` so the
+   lock file matches, commit and push to `main`.
+2. Tag that commit and push the tag: `git tag v1.3.0 && git push origin v1.3.0`.
+3. GitHub Actions runs the tests, builds, verifies the package and then
+   creates a **draft** release `v1.3.0` with the Setup exe, its `.blockmap`,
+   `latest.yml`, the portable exe and `SHA256SUMS.txt`. A failed test/build or
+   a tag that does not match `package.json` creates nothing.
+4. Check the draft on GitHub, add notes if you like, and press **Publish
+   release**. Only then does the Updates tab see it.
 
 ## Unsigned app warning
 
@@ -226,7 +272,6 @@ anyway** to proceed. Code signing is intentionally out of scope for this stage.
 
 ## Which build to test first
 
-Start with the **portable `.exe`** — no installation, no admin prompt, just
-run it directly. It's the fastest way to confirm the scanner, printing and
-Delivery Photos all work end-to-end on a given Windows machine. Once that's
-confirmed, the NSIS installer can be used for a more permanent setup.
+For a quick try-out, the **portable `.exe`** needs no installation - just run
+it. For the production PC use the **Setup** installer: only an installed copy
+can be updated (or rolled back) from the Updates tab.

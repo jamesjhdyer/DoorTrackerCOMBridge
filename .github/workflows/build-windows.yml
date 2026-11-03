@@ -8,11 +8,19 @@ name: Build Windows
 # package is built - there is no continue-on-error here. A failing test fails
 # this whole build; no package is produced or published from code whose tests
 # did not pass.
+#
+# Pushing a version tag (v1.3.0) does the same AND THEN - only if the tests,
+# build and package checks all passed - creates a DRAFT GitHub Release with
+# the installer, its update metadata and the portable exe attached (see the
+# "release" job). The in-app updater ignores drafts; it sees the release once
+# it is published on GitHub. Ordinary pushes to main never create a release.
 
 on:
   push:
     branches:
       - main
+    tags:
+      - 'v*.*.*'
   workflow_dispatch: {}
 
 permissions:
@@ -36,6 +44,20 @@ jobs:
         uses: actions/setup-node@v4
         with:
           node-version: '24'
+
+      # A release tag must name exactly the version being built - otherwise
+      # the installer, latest.yml and the tag would disagree and the in-app
+      # updater would refuse the release. Checked first, before anything else.
+      - name: Check tag matches package.json version
+        if: startsWith(github.ref, 'refs/tags/v')
+        shell: bash
+        run: |
+          VERSION=$(node -p "require('./package.json').version")
+          if [ "${GITHUB_REF_NAME}" != "v${VERSION}" ]; then
+            echo "Tag ${GITHUB_REF_NAME} does not match package.json version ${VERSION} (expected tag v${VERSION})."
+            exit 1
+          fi
+          echo "Tag ${GITHUB_REF_NAME} matches package.json version ${VERSION}."
 
       - name: Install dependencies
         shell: bash
@@ -77,9 +99,69 @@ jobs:
           done
           echo "Delivery Photos web assets confirmed present in the built package."
 
+      # The same idea for the in-app updater and Remote Admin: the release
+      # assets under the exact names the updater looks for, latest.yml whose
+      # SHA-512 really matches the installer, app-update.yml, and the updater,
+      # Remote Admin (with its web page) and electron-updater inside app.asar.
+      - name: Verify updater and Remote Admin files are really in the package
+        run: node scripts/verify-package.js
+
+      # Just the files a GitHub Release carries, for the release job below.
+      - name: Upload release assets
+        if: startsWith(github.ref, 'refs/tags/v')
+        uses: actions/upload-artifact@v4
+        with:
+          name: release-assets
+          if-no-files-found: error
+          path: |
+            dist/DoorTrackerCOMBridge-Setup-*.exe
+            dist/DoorTrackerCOMBridge-Setup-*.exe.blockmap
+            dist/DoorTrackerCOMBridge-Portable-*.exe
+            dist/latest.yml
+
       - name: Upload Windows build artifact
         uses: actions/upload-artifact@v4
         with:
           name: DoorTrackerCOMBridge-Windows
           path: dist/
           if-no-files-found: error
+
+  # Only for a version tag, and only after everything above succeeded. The
+  # one place with permission to write to the repository (creating the
+  # release); it never builds or runs project code itself.
+  release:
+    needs: build-windows
+    if: startsWith(github.ref, 'refs/tags/v')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+
+    steps:
+      - name: Download release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: release-assets
+          path: assets
+
+      - name: Add SHA256SUMS.txt
+        working-directory: assets
+        run: sha256sum DoorTrackerCOMBridge-* latest.yml > SHA256SUMS.txt && cat SHA256SUMS.txt
+
+      # A DRAFT: check it on GitHub, then press "Publish release". Fails
+      # (rather than overwriting anything) if a release for this tag exists.
+      - name: Create draft GitHub Release
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          VERSION="${GITHUB_REF_NAME#v}"
+          gh release create "${GITHUB_REF_NAME}" \
+            --repo "${GITHUB_REPOSITORY}" \
+            --draft \
+            --verify-tag \
+            --title "Door Tracker COM Bridge ${VERSION}" \
+            --notes "Install or update with DoorTrackerCOMBridge-Setup-${VERSION}.exe (or from the app's Updates tab once this release is published). The portable exe is for troubleshooting only and cannot update itself. latest.yml and the .blockmap are used by the in-app updater - leave them attached." \
+            assets/DoorTrackerCOMBridge-Setup-${VERSION}.exe \
+            assets/DoorTrackerCOMBridge-Setup-${VERSION}.exe.blockmap \
+            assets/DoorTrackerCOMBridge-Portable-${VERSION}.exe \
+            assets/latest.yml \
+            assets/SHA256SUMS.txt
